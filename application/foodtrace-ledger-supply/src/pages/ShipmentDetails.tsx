@@ -105,13 +105,23 @@ const ShipmentDetails = () => {
       default: return 'bg-gray-100 text-gray-800';
     }
   };
-  const formatDate = (dateString: string | null | undefined) => { /* ... same ... */ 
+  const formatDate = (dateString: string | null | undefined) => {
     if (!dateString) return 'Not specified';
     try {
       const date = new Date(dateString);
-      if (isNaN(date.getTime())) return "Invalid Date";
-      return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
-    } catch (e) { return "Invalid Date"; }
+      if (isNaN(date.getTime())) return 'Invalid Date';
+      if (date.getUTCFullYear() <= 1) return 'Not specified'; // handle Go zero time
+      return date.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short'
+      });
+    } catch (e) {
+      return 'Invalid Date';
+    }
   };
   const getTimelineSteps = () => { /* ... same ... */ 
     const steps = [
