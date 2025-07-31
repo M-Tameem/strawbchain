@@ -1,0 +1,51 @@
+# Node.js dependencies
+**/node_modules/
+
+# Build outputs
+**/dist/
+**/build/
+
+# Log files
+*.log
+
+# Runtime DBs and local SQLite
+**/foodtrace.db
+
+# IDE settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Bun lock file
+**/bun.lockb
+
+# Lock files (can keep `package-lock.json` if you want strict versioning)
+**/package-lock.json
+
+# Local environment variables
+.env
+.env.*
+
+# Frontend public outputs (if any are generated)
+**/public/*
+
+# Compiled TypeScript (if not already in build/)
+**/*.tsbuildinfo
+
+# Coverage
+coverage/
+**/coverage/
+
+# Test snapshots and results
+*.snap
+junit.xml
+test-results.xml
+
+# Misc
+*.swp
+chaincode/foodtrace.bin

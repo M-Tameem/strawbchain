@@ -1,0 +1,4068 @@
+package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"foodtrace/model" // Assuming model is in a direct subdirectory: foodtrace/model/
+	"strings"
+	"time"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+	"github.com/hyperledger/fabric/common/flogging"
+)
+
+var logger = flogging.MustGetLogger("foodtrace.shipmentcontract")
+
+// shipmentObjectType is used for composite keys and as a 'docType' for CouchDB queries.
+const shipmentObjectType = "Shipment"
+
+// Constants for input validation and limits
+const (
+	maxStringInputLength    = 256
+	maxDescriptionLength    = 1024
+	maxRecallReasonLength   = 512
+	defaultRecallQueryHours = 72 // Default time window (+/- hours) for related shipment query
+	maxArrayElements        = 50 // Arbitrary limit for arrays like QualityCertifications, TransitLocationLog
+)
+
+// FoodtraceSmartContract provides functions for managing food shipments.
+// @contract:FoodtraceSmartContract
+type FoodtraceSmartContract struct {
+	contractapi.Contract
+}
+
+// actorInfo holds commonly needed details about the transaction invoker.
+// This struct and its associated functions (getCurrentActorInfo, getCurrentTxTimestamp)
+// are fundamental and used by many operations, so they remain in the core contract file.
+type actorInfo struct {
+	fullID string
+	alias  string
+	mspID  string
+}
+
+// Instantiate is called during chaincode instantiation.
+// It's a lifecycle method of the contract.
+func (s *FoodtraceSmartContract) Instantiate(ctx contractapi.TransactionContextInterface) {
+	logger.Info("FoodtraceSmartContract Instantiated/Upgraded")
+}
+
+// --- Identity & Role Management Wrappers (Delegating to IdentityManager) ---
+// These are direct pass-throughs or simple wrappers to IdentityManager,
+// keeping the contract API clean.
+
+func (s *FoodtraceSmartContract) RegisterIdentity(ctx contractapi.TransactionContextInterface, targetFullID, shortName, enrollmentID string) error {
+	logger.Infof("Chaincode Call: RegisterIdentity for '%s' with alias '%s'", targetFullID, shortName)
+	return NewIdentityManager(ctx).RegisterIdentity(targetFullID, shortName, enrollmentID)
+}
+
+func (s *FoodtraceSmartContract) AssignRoleToIdentity(ctx contractapi.TransactionContextInterface, identityOrAlias, role string) error {
+	logger.Infof("Chaincode Call: AssignRole '%s' to '%s'", role, identityOrAlias)
+	return NewIdentityManager(ctx).AssignRole(identityOrAlias, role)
+}
+
+func (s *FoodtraceSmartContract) RemoveRoleFromIdentity(ctx contractapi.TransactionContextInterface, identityOrAlias, role string) error {
+	logger.Infof("Chaincode Call: RemoveRole '%s' from '%s'", role, identityOrAlias)
+	return NewIdentityManager(ctx).RemoveRole(identityOrAlias, role)
+}
+
+func (s *FoodtraceSmartContract) MakeIdentityAdmin(ctx contractapi.TransactionContextInterface, identityOrAlias string) error {
+	logger.Infof("Chaincode Call: MakeAdmin for '%s'", identityOrAlias)
+	return NewIdentityManager(ctx).MakeAdmin(identityOrAlias)
+}
+
+func (s *FoodtraceSmartContract) RemoveIdentityAdmin(ctx contractapi.TransactionContextInterface, identityOrAlias string) error {
+	logger.Infof("Chaincode Call: RemoveAdmin for '%s'", identityOrAlias)
+	return NewIdentityManager(ctx).RemoveAdmin(identityOrAlias)
+}
+
+func (s *FoodtraceSmartContract) GetIdentityDetails(ctx contractapi.TransactionContextInterface, identityOrAlias string) (*model.IdentityInfo, error) {
+	logger.Debugf("Chaincode Call: GetIdentityDetails for '%s'", identityOrAlias)
+	im := NewIdentityManager(ctx)
+	// Authorization logic is within GetIdentityDetails, but primary delegation remains.
+	// This is simplified from the original as the core logic is in IdentityManager.
+	// The original had specific auth logic here; this should ideally be pushed down
+	// into IdentityManager.GetIdentityInfo if it's complex, or kept if it's contract-specific.
+	// For this refactor, assuming the original auth logic in GetIdentityDetails from shipment_contract.go was intentional for this layer.
+	isCallerAdmin, err := im.IsCurrentUserAdmin()
+	if err != nil {
+		return nil, fmt.Errorf("GetIdentityDetails: failed to check admin status: %w", err)
+	}
+
+	if !isCallerAdmin {
+		callerFullID, err := im.GetCurrentIdentityFullID()
+		if err != nil {
+			return nil, fmt.Errorf("GetIdentityDetails: failed to get caller's FullID: %w", err)
+		}
+		targetFullID, err := im.ResolveIdentity(identityOrAlias)
+		if err != nil {
+			return nil, fmt.Errorf("GetIdentityDetails: failed to resolve target identity '%s': %w", identityOrAlias, err)
+		}
+		if callerFullID != targetFullID {
+			return nil, errors.New("unauthorized: only admins or the identity owner can get these details")
+		}
+	}
+	return im.GetIdentityInfo(identityOrAlias)
+}
+
+func (s *FoodtraceSmartContract) GetAllIdentities(ctx contractapi.TransactionContextInterface) ([]model.IdentityInfo, error) {
+	logger.Debug("Chaincode Call: GetAllIdentities")
+	return NewIdentityManager(ctx).GetAllRegisteredIdentities()
+}
+
+// Add this to shipment_contract.go
+
+// GetAllAliases returns a list of all registered aliases (shortNames) in the system.
+// This is a public function that doesn't require admin privileges.
+// Fix for GetAllAliases (from earlier artifact)
+func (s *FoodtraceSmartContract) GetAllAliases(ctx contractapi.TransactionContextInterface) ([]string, error) {
+	logger.Debug("Chaincode Call: GetAllAliases (public access)")
+
+	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey("IdentityInfo", []string{})
+	if err != nil {
+		return nil, fmt.Errorf("GetAllAliases: failed to get identities iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	// FIXED: Initialize as empty slice, not nil
+	aliases := []string{}
+	aliasSet := make(map[string]bool)
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetAllAliases: Failed to get next identity from iterator: %v. Skipping.", iterErr)
+			continue
+		}
+
+		var idInfo model.IdentityInfo
+		if err := json.Unmarshal(queryResponse.Value, &idInfo); err != nil {
+			logger.Warningf("GetAllAliases: Failed to unmarshal identity data for key '%s': %v. Skipping.", queryResponse.Key, err)
+			continue
+		}
+
+		if idInfo.ShortName != "" && !aliasSet[idInfo.ShortName] {
+			aliases = append(aliases, idInfo.ShortName)
+			aliasSet[idInfo.ShortName] = true
+		}
+	}
+
+	logger.Infof("GetAllAliases: Returning %d unique aliases", len(aliases))
+	return aliases, nil // Will be [] if empty, not null
+}
+
+// Alternative: GetAllAliasesWithDetails returns alias and role info (still public)
+func (s *FoodtraceSmartContract) GetAllAliasesWithDetails(ctx contractapi.TransactionContextInterface) ([]map[string]interface{}, error) {
+	logger.Debug("Chaincode Call: GetAllAliasesWithDetails (public access)")
+
+	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey("IdentityInfo", []string{})
+	if err != nil {
+		return nil, fmt.Errorf("GetAllAliasesWithDetails: failed to get identities iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	var aliasDetails []map[string]interface{}
+	aliasSet := make(map[string]bool)
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetAllAliasesWithDetails: Failed to get next identity: %v. Skipping.", iterErr)
+			continue
+		}
+
+		var idInfo model.IdentityInfo
+		if err := json.Unmarshal(queryResponse.Value, &idInfo); err != nil {
+			logger.Warningf("GetAllAliasesWithDetails: Failed to unmarshal identity: %v. Skipping.", err)
+			continue
+		}
+
+		if idInfo.ShortName != "" && !aliasSet[idInfo.ShortName] {
+			aliasDetails = append(aliasDetails, map[string]interface{}{
+				"alias":        idInfo.ShortName,
+				"roles":        idInfo.Roles,
+				"isAdmin":      idInfo.IsAdmin,
+				"organization": idInfo.OrganizationMSP,
+				// Don't expose FullID for privacy
+			})
+			aliasSet[idInfo.ShortName] = true
+		}
+	}
+
+	logger.Infof("GetAllAliasesWithDetails: Returning %d unique aliases with details", len(aliasDetails))
+	return aliasDetails, nil
+}
+
+// Add this to shipment_contract.go
+
+// GetAliasesByRole returns aliases filtered by a specific role.
+// This is a public function that doesn't require admin privileges.
+// Fix for GetAliasesByRole (from earlier artifact)
+func (s *FoodtraceSmartContract) GetAliasesByRole(ctx contractapi.TransactionContextInterface, roleFilter string) ([]string, error) {
+	logger.Debugf("Chaincode Call: GetAliasesByRole for role '%s' (public access)", roleFilter)
+
+	roleFilterLower := strings.ToLower(strings.TrimSpace(roleFilter))
+	if roleFilterLower == "" {
+		return nil, errors.New("roleFilter cannot be empty")
+	}
+
+	validRoles := map[string]bool{
+		"farmer": true, "processor": true, "distributor": true,
+		"retailer": true, "certifier": true, "admin": true,
+	}
+	if !validRoles[roleFilterLower] {
+		return nil, fmt.Errorf("invalid role filter '%s'. Valid roles: farmer, processor, distributor, retailer, certifier, admin", roleFilter)
+	}
+
+	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey("IdentityInfo", []string{})
+	if err != nil {
+		return nil, fmt.Errorf("GetAliasesByRole: failed to get identities iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	// FIXED: Initialize as empty slice, not nil
+	aliases := []string{}
+	aliasSet := make(map[string]bool)
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetAliasesByRole: Failed to get next identity from iterator: %v. Skipping.", iterErr)
+			continue
+		}
+
+		var idInfo model.IdentityInfo
+		if err := json.Unmarshal(queryResponse.Value, &idInfo); err != nil {
+			logger.Warningf("GetAliasesByRole: Failed to unmarshal identity data for key '%s': %v. Skipping.", queryResponse.Key, err)
+			continue
+		}
+
+		hasRequestedRole := false
+		if roleFilterLower == "admin" {
+			hasRequestedRole = idInfo.IsAdmin
+		} else {
+			for _, role := range idInfo.Roles {
+				if strings.ToLower(role) == roleFilterLower {
+					hasRequestedRole = true
+					break
+				}
+			}
+		}
+
+		if hasRequestedRole && idInfo.ShortName != "" && !aliasSet[idInfo.ShortName] {
+			aliases = append(aliases, idInfo.ShortName)
+			aliasSet[idInfo.ShortName] = true
+		}
+	}
+
+	logger.Infof("GetAliasesByRole: Returning %d unique aliases for role '%s'", len(aliases), roleFilter)
+	return aliases, nil // Will be [] if empty, not null
+}
+
+// GetAliasesByRoleWithDetails returns detailed information about aliases filtered by role.
+func (s *FoodtraceSmartContract) GetAliasesByRoleWithDetails(ctx contractapi.TransactionContextInterface, roleFilter string) ([]map[string]interface{}, error) {
+	logger.Debugf("Chaincode Call: GetAliasesByRoleWithDetails for role '%s' (public access)", roleFilter)
+
+	// Validate the role filter
+	roleFilterLower := strings.ToLower(strings.TrimSpace(roleFilter))
+	if roleFilterLower == "" {
+		return nil, errors.New("roleFilter cannot be empty")
+	}
+
+	validRoles := map[string]bool{
+		"farmer": true, "processor": true, "distributor": true,
+		"retailer": true, "certifier": true, "admin": true,
+	}
+	if !validRoles[roleFilterLower] {
+		return nil, fmt.Errorf("invalid role filter '%s'. Valid roles: farmer, processor, distributor, retailer, certifier, admin", roleFilter)
+	}
+
+	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey("IdentityInfo", []string{})
+	if err != nil {
+		return nil, fmt.Errorf("GetAliasesByRoleWithDetails: failed to get identities iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	var aliasDetails []map[string]interface{}
+	aliasSet := make(map[string]bool)
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetAliasesByRoleWithDetails: Failed to get next identity: %v. Skipping.", iterErr)
+			continue
+		}
+
+		var idInfo model.IdentityInfo
+		if err := json.Unmarshal(queryResponse.Value, &idInfo); err != nil {
+			logger.Warningf("GetAliasesByRoleWithDetails: Failed to unmarshal identity: %v. Skipping.", err)
+			continue
+		}
+
+		// Check if user has the requested role or is admin (for admin filter)
+		hasRequestedRole := false
+		if roleFilterLower == "admin" {
+			hasRequestedRole = idInfo.IsAdmin
+		} else {
+			for _, role := range idInfo.Roles {
+				if strings.ToLower(role) == roleFilterLower {
+					hasRequestedRole = true
+					break
+				}
+			}
+		}
+
+		if hasRequestedRole && idInfo.ShortName != "" && !aliasSet[idInfo.ShortName] {
+			aliasDetails = append(aliasDetails, map[string]interface{}{
+				"alias":        idInfo.ShortName,
+				"roles":        idInfo.Roles,
+				"isAdmin":      idInfo.IsAdmin,
+				"organization": idInfo.OrganizationMSP,
+				"registeredAt": idInfo.RegisteredAt.Format(time.RFC3339),
+				// Don't expose FullID for privacy
+			})
+			aliasSet[idInfo.ShortName] = true
+		}
+	}
+
+	logger.Infof("GetAliasesByRoleWithDetails: Returning %d unique aliases with details for role '%s'", len(aliasDetails), roleFilter)
+	return aliasDetails, nil
+}
+
+// GetAllRolesWithCounts returns a summary of all roles and how many users have each role
+func (s *FoodtraceSmartContract) GetAllRolesWithCounts(ctx contractapi.TransactionContextInterface) (map[string]interface{}, error) {
+	logger.Debug("Chaincode Call: GetAllRolesWithCounts (public access)")
+
+	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey("IdentityInfo", []string{})
+	if err != nil {
+		return nil, fmt.Errorf("GetAllRolesWithCounts: failed to get identities iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	roleCounts := map[string]int{
+		"farmer": 0, "processor": 0, "distributor": 0,
+		"retailer": 0, "certifier": 0, "admin": 0,
+	}
+	totalUsers := 0
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetAllRolesWithCounts: Failed to get next identity: %v. Skipping.", iterErr)
+			continue
+		}
+
+		var idInfo model.IdentityInfo
+		if err := json.Unmarshal(queryResponse.Value, &idInfo); err != nil {
+			logger.Warningf("GetAllRolesWithCounts: Failed to unmarshal identity: %v. Skipping.", err)
+			continue
+		}
+
+		if idInfo.ShortName != "" { // Only count users with aliases
+			totalUsers++
+
+			// Count admin status
+			if idInfo.IsAdmin {
+				roleCounts["admin"]++
+			}
+
+			// Count each role
+			for _, role := range idInfo.Roles {
+				roleLower := strings.ToLower(role)
+				if _, exists := roleCounts[roleLower]; exists {
+					roleCounts[roleLower]++
+				}
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"roleCounts": roleCounts,
+		"totalUsers": totalUsers,
+	}, nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"foodtrace/model"
+	"time"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Lifecycle: Farmer Operations ---
+
+func (s *FoodtraceSmartContract) CreateShipment(ctx contractapi.TransactionContextInterface,
+	shipmentID string, productName string, description string, quantity float64, unitOfMeasure string,
+	farmerDataJSON string) error {
+
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("CreateShipment: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := im.RequireRole("farmer"); err != nil {
+		return err
+	}
+
+	logger.Infof("Farmer '%s' (alias: '%s') creating shipment '%s': %s", actor.fullID, actor.alias, shipmentID, productName)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	if err := s.validateRequiredString(productName, "productName", maxStringInputLength); err != nil {
+		return err
+	}
+	if err := s.validateOptionalString(description, "description", maxDescriptionLength); err != nil {
+		return err
+	}
+	if quantity <= 0 {
+		return errors.New("quantity must be positive")
+	}
+	if err := s.validateRequiredString(unitOfMeasure, "unitOfMeasure", maxStringInputLength); err != nil {
+		return err
+	}
+
+	shipmentKey, err := s.createShipmentCompositeKey(ctx, shipmentID)
+	if err != nil {
+		return fmt.Errorf("CreateShipment: failed to create composite key for shipment '%s': %w", shipmentID, err)
+	}
+	existing, err := ctx.GetStub().GetState(shipmentKey)
+	if err != nil {
+		return fmt.Errorf("CreateShipment: failed to check for existing shipment '%s': %w", shipmentID, err)
+	}
+	if existing != nil {
+		return fmt.Errorf("shipment with ID '%s' already exists", shipmentID)
+	}
+
+	fdArgs, err := s.validateFarmerDataArgs(farmerDataJSON) // Using dedicated validator
+	if err != nil {
+		return fmt.Errorf("CreateShipment: invalid farmerDataJSON: %w", err)
+	}
+
+	destProcFullID, err := im.ResolveIdentity(fdArgs.DestinationProcessorID)
+	if err != nil {
+		return fmt.Errorf("CreateShipment: failed to resolve destinationProcessorId '%s': %w", fdArgs.DestinationProcessorID, err)
+	}
+	// Optional: Stronger check for DestinationProcessor's role
+	// hasRole, roleErr := im.HasRole(destProcFullID, "processor")
+	// if roleErr != nil { return fmt.Errorf("CreateShipment: error checking role for destination processor '%s': %w", destProcFullID, roleErr) }
+	// if !hasRole { return fmt.Errorf("CreateShipment: destination identity '%s' (alias: %s) does not have 'processor' role", destProcFullID, fdArgs.DestinationProcessorID) }
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("CreateShipment: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment := model.Shipment{
+		ObjectType: shipmentObjectType, ID: shipmentID, ProductName: productName, Description: description,
+		Quantity: quantity, UnitOfMeasure: unitOfMeasure, CurrentOwnerID: actor.fullID, CurrentOwnerAlias: actor.alias,
+		Status: model.StatusCreated, CreatedAt: now, LastUpdatedAt: now,
+		FarmerData: &model.FarmerData{ // Directly use validated and parsed fdArgs
+			FarmerID:                  actor.fullID,
+			FarmerAlias:               actor.alias,
+			FarmerName:                fdArgs.FarmerName,
+			FarmLocation:              fdArgs.FarmLocation,
+			CropType:                  fdArgs.CropType,
+			PlantingDate:              fdArgs.PlantingDate,
+			FertilizerUsed:            fdArgs.FertilizerUsed,
+			CertificationDocumentHash: fdArgs.CertificationDocumentHash,
+			HarvestDate:               fdArgs.HarvestDate,
+			FarmingPractice:           fdArgs.FarmingPractice,
+			DestinationProcessorID:    destProcFullID,
+		},
+		CertificationRecords: []model.CertificationRecord{},
+		RecallInfo:           &model.RecallInfo{IsRecalled: false, LinkedShipmentIDs: []string{}},
+		History:              []model.HistoryEntry{},
+	}
+	ensureShipmentSchemaCompliance(&shipment) // Call before marshal
+
+	shipmentBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("CreateShipment: failed to marshal shipment '%s': %w", shipmentID, err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, shipmentBytes); err != nil {
+		return fmt.Errorf("CreateShipment: failed to save shipment '%s' to ledger: %w", shipmentID, err)
+	}
+
+	eventPayload := map[string]interface{}{
+		"destinationProcessorFullId": destProcFullID, "cropType": fdArgs.CropType, "harvestDate": fdArgs.HarvestDate.Format(time.RFC3339),
+		"plantingDate": fdArgs.PlantingDate.Format(time.RFC3339), "farmingPractice": fdArgs.FarmingPractice,
+	}
+	s.emitShipmentEvent(ctx, "ShipmentCreated", &shipment, actor, eventPayload)
+	logger.Infof("Shipment '%s' created successfully by farmer '%s'", shipmentID, actor.alias)
+	return nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"fmt"
+	"foodtrace/model"
+	"time"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Lifecycle: Retailer Operations ---
+
+func (s *FoodtraceSmartContract) ReceiveShipment(ctx contractapi.TransactionContextInterface, shipmentID string, retailerDataJSON string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("ReceiveShipment: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := im.RequireRole("retailer"); err != nil {
+		return err
+	}
+
+	logger.Infof("Retailer '%s' (alias: '%s') receiving shipment '%s'", actor.fullID, actor.alias, shipmentID)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	rdArgs, err := s.validateRetailerDataArgs(retailerDataJSON)
+	if err != nil {
+		return err
+	}
+
+	shipment, err := s.getShipmentAndVerifyStage(ctx, shipmentID, model.StatusDistributed, actor.fullID)
+	if err != nil {
+		return fmt.Errorf("ReceiveShipment: %w", err)
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("ReceiveShipment: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment.RetailerData = &model.RetailerData{
+		RetailerID:         actor.fullID,
+		RetailerAlias:      actor.alias,
+		DateReceived:       rdArgs.DateReceived,
+		RetailerLineID:     rdArgs.RetailerLineID,
+		ProductNameRetail:  rdArgs.ProductNameRetail,
+		ShelfLife:          rdArgs.ShelfLife,
+		SellByDate:         rdArgs.SellByDate,
+		RetailerExpiryDate: rdArgs.RetailerExpiryDate,
+		StoreID:            rdArgs.StoreID,
+		StoreLocation:      rdArgs.StoreLocation,
+		Price:              rdArgs.Price,
+		QRCodeLink:         rdArgs.QRCodeLink,
+	}
+	shipment.Status = model.StatusDelivered
+	shipment.CurrentOwnerID = actor.fullID
+	shipment.CurrentOwnerAlias = actor.alias
+	shipment.LastUpdatedAt = now
+	ensureShipmentSchemaCompliance(shipment) // Ensure sub-fields are initialized
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	shipmentBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("ReceiveShipment: failed to marshal shipment '%s': %w", shipmentID, err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, shipmentBytes); err != nil {
+		return fmt.Errorf("ReceiveShipment: failed to update shipment '%s' on ledger: %w", shipmentID, err)
+	}
+
+	eventPayload := map[string]interface{}{
+		"storeId": rdArgs.StoreID, "storeLocation": rdArgs.StoreLocation, "dateReceived": rdArgs.DateReceived.Format(time.RFC3339),
+	}
+	if rdArgs.Price != 0 { // Send price if set explicitly (original logic)
+		eventPayload["price"] = rdArgs.Price
+	}
+	s.emitShipmentEvent(ctx, "ShipmentDelivered", shipment, actor, eventPayload)
+	logger.Infof("Shipment '%s' received by '%s'", shipmentID, actor.alias)
+	return nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"fmt"
+	"foodtrace/model"
+	"time"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Lifecycle: Distributor Operations ---
+
+func (s *FoodtraceSmartContract) DistributeShipment(ctx contractapi.TransactionContextInterface, shipmentID string, distributorDataJSON string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("DistributeShipment: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := im.RequireRole("distributor"); err != nil {
+		return err
+	}
+
+	logger.Infof("Distributor '%s' (alias: '%s') distributing shipment '%s'", actor.fullID, actor.alias, shipmentID)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	ddArgs, err := s.validateDistributorDataArgs(distributorDataJSON)
+	if err != nil {
+		return err
+	}
+
+	shipment, err := s.getShipmentAndVerifyStage(ctx, shipmentID, model.StatusProcessed, actor.fullID)
+	if err != nil {
+		return fmt.Errorf("DistributeShipment: %w", err)
+	}
+
+	destRetFullID, err := im.ResolveIdentity(ddArgs.DestinationRetailerID)
+	if err != nil {
+		return fmt.Errorf("DistributeShipment: failed to resolve distributorData.destinationRetailerId '%s': %w", ddArgs.DestinationRetailerID, err)
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("DistributeShipment: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment.DistributorData = &model.DistributorData{
+		DistributorID:         actor.fullID,
+		DistributorAlias:      actor.alias,
+		PickupDateTime:        ddArgs.PickupDateTime,
+		DeliveryDateTime:      ddArgs.DeliveryDateTime,
+		DistributionLineID:    ddArgs.DistributionLineID,
+		TemperatureRange:      ddArgs.TemperatureRange,
+		StorageTemperature:    ddArgs.StorageTemperature,
+		TransitLocationLog:    ddArgs.TransitLocationLog,
+		TransportConditions:   ddArgs.TransportConditions,
+		DistributionCenter:    ddArgs.DistributionCenter,
+		DestinationRetailerID: destRetFullID,
+	}
+	shipment.Status = model.StatusDistributed
+	shipment.CurrentOwnerID = actor.fullID
+	shipment.CurrentOwnerAlias = actor.alias
+	shipment.LastUpdatedAt = now
+	ensureShipmentSchemaCompliance(shipment) // Ensure sub-fields are initialized
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	shipmentBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("DistributeShipment: failed to marshal shipment '%s': %w", shipmentID, err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, shipmentBytes); err != nil {
+		return fmt.Errorf("DistributeShipment: failed to update shipment '%s' on ledger: %w", shipmentID, err)
+	}
+
+	eventPayload := map[string]interface{}{
+		"destinationRetailerFullId": destRetFullID, "pickupDateTime": ddArgs.PickupDateTime.Format(time.RFC3339),
+		"distributionCenter": ddArgs.DistributionCenter,
+	}
+	if !ddArgs.DeliveryDateTime.IsZero() {
+		eventPayload["deliveryDateTime"] = ddArgs.DeliveryDateTime.Format(time.RFC3339)
+	}
+	s.emitShipmentEvent(ctx, "ShipmentDistributed", shipment, actor, eventPayload)
+	logger.Infof("Shipment '%s' distributed by '%s'", shipmentID, actor.alias)
+	return nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"foodtrace/model"
+	"strings"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Lifecycle: Admin Operations ---
+
+// BootstrapLedger initializes the ledger with a bootstrap admin identity if no admin exists.
+// FIXED: Improved to handle multiple calls gracefully
+func (s *FoodtraceSmartContract) BootstrapLedger(ctx contractapi.TransactionContextInterface) error {
+	logger.Info("Attempting to bootstrap ledger with initial admin (direct write method)...")
+	im := NewIdentityManager(ctx) // Still useful for its helper methods like createKey
+
+	anyAdminAlreadyExists, err := im.AnyAdminExists()
+	if err != nil {
+		return fmt.Errorf("BootstrapLedger: failed to check if any admin exists: %w", err)
+	}
+	if anyAdminAlreadyExists {
+		msg := "system already has admins or is bootstrapped. BootstrapLedger should not be re-run."
+		logger.Info(msg) // FIXED: Use Info instead of Warning for expected behavior
+		// This is not an error if the script handles it, but for a strict bootstrap, it is.
+		// The Python script checks for this specific message, so we should return it.
+		return errors.New(msg)
+	}
+
+	callerActorInfo, err := s.getCurrentActorInfo(ctx) // Uses helper from shipment_helpers.go
+	if err != nil {
+		return fmt.Errorf("BootstrapLedger: failed to get caller identity for bootstrap: %w", err)
+	}
+	callerFullID := callerActorInfo.fullID
+	bootstrapAdminAlias := callerActorInfo.alias        // Use the alias from getCurrentActorInfo
+	bootstrapAdminEnrollmentID := callerActorInfo.alias // Or however enrollmentID is determined for bootstrap
+
+	logger.Infof("BootstrapLedger: Preparing to register bootstrap admin '%s' (alias: '%s', enrollmentID: '%s') using direct state writes.",
+		callerFullID, bootstrapAdminAlias, bootstrapAdminEnrollmentID)
+
+	nowForBootstrap, tsErr := s.getCurrentTxTimestamp(ctx)
+	if tsErr != nil {
+		return fmt.Errorf("BootstrapLedger: failed to get timestamp for direct state writes: %w", tsErr)
+	}
+
+	// 1. Create and save IdentityInfo for the bootstrap admin directly
+	bootstrapAdminInfo := model.IdentityInfo{
+		ObjectType:      "IdentityInfo", // Constant from identity_manager.go
+		FullID:          callerFullID,
+		ShortName:       bootstrapAdminAlias,
+		EnrollmentID:    bootstrapAdminEnrollmentID,
+		OrganizationMSP: callerActorInfo.mspID,
+		Roles:           []string{},   // First admin has no other specific roles by default
+		IsAdmin:         true,         // Explicitly set to true
+		RegisteredBy:    callerFullID, // Self-registered during bootstrap
+		RegisteredAt:    nowForBootstrap,
+		LastUpdatedAt:   nowForBootstrap,
+	}
+	identityKey, keyErr := im.createIdentityCompositeKey(callerFullID)
+	if keyErr != nil {
+		return fmt.Errorf("BootstrapLedger: failed to create identity key for bootstrap admin '%s': %w", callerFullID, keyErr)
+	}
+	bootstrapAdminInfoBytes, marshalErr := json.Marshal(bootstrapAdminInfo)
+	if marshalErr != nil {
+		return fmt.Errorf("BootstrapLedger: failed to marshal bootstrap admin IdentityInfo: %w", marshalErr)
+	}
+	if err := ctx.GetStub().PutState(identityKey, bootstrapAdminInfoBytes); err != nil {
+		return fmt.Errorf("BootstrapLedger: failed to save bootstrap admin IdentityInfo for '%s': %w", callerFullID, err)
+	}
+	logger.Infof("BootstrapLedger: Bootstrap admin IdentityInfo for '%s' saved directly.", callerFullID)
+
+	// 2. Create and save the Alias mapping directly
+	aliasKey, aliasKeyErr := im.createAliasCompositeKey(bootstrapAdminAlias)
+	if aliasKeyErr != nil {
+		return fmt.Errorf("BootstrapLedger: failed to create alias key for bootstrap admin '%s': %w", bootstrapAdminAlias, aliasKeyErr)
+	}
+	if err := ctx.GetStub().PutState(aliasKey, []byte(callerFullID)); err != nil {
+		// Consider cleanup if this fails after IdentityInfo is saved? For bootstrap, might be okay to error out.
+		return fmt.Errorf("BootstrapLedger: failed to save bootstrap admin alias mapping '%s' -> '%s': %w", bootstrapAdminAlias, callerFullID, err)
+	}
+	logger.Infof("BootstrapLedger: Bootstrap admin alias mapping for '%s' -> '%s' saved directly.", bootstrapAdminAlias, callerFullID)
+
+	// 3. Create and save the AdminFlag directly
+	adminFlagKey, flagKeyErr := im.createAdminFlagCompositeKey(callerFullID)
+	if flagKeyErr != nil {
+		return fmt.Errorf("BootstrapLedger: failed to create admin flag key for '%s': %w", callerFullID, flagKeyErr)
+	}
+	if err := ctx.GetStub().PutState(adminFlagKey, []byte("true")); err != nil {
+		// Consider cleanup if this fails.
+		return fmt.Errorf("BootstrapLedger: failed to set admin flag for bootstrap admin '%s': %w", callerFullID, err)
+	}
+	logger.Infof("BootstrapLedger: Bootstrap admin flag for '%s' set directly.", callerFullID)
+
+	logger.Infof("BootstrapLedger: Ledger bootstrapped successfully using direct state writes. Identity '%s' (alias: '%s') is now an admin.", callerFullID, bootstrapAdminAlias)
+	return nil
+}
+
+func (s *FoodtraceSmartContract) ArchiveShipment(ctx contractapi.TransactionContextInterface, shipmentID string, archiveReason string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("ArchiveShipment: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := s.requireAdmin(ctx, im); err != nil { // requireAdmin is in shipment_helpers.go
+		return fmt.Errorf("ArchiveShipment: %w. Caller: %s", err, actor.alias)
+	}
+
+	logger.Infof("Admin '%s' (alias: '%s') attempting to archive shipment '%s'. Reason: %s", actor.fullID, actor.alias, shipmentID, archiveReason)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil { // validateRequiredString is in shipment_helpers.go
+		return err
+	}
+	if err := s.validateOptionalString(archiveReason, "archiveReason", maxDescriptionLength); err != nil { // validateOptionalString is in shipment_helpers.go
+		return err
+	}
+
+	shipment, err := s.getShipmentByID(ctx, shipmentID) // getShipmentByID is in shipment_query_ops.go (but used as a helper here)
+	if err != nil {
+		return fmt.Errorf("ArchiveShipment: failed to get shipment '%s': %w", shipmentID, err)
+	}
+
+	if shipment.IsArchived {
+		logger.Infof("ArchiveShipment: Shipment '%s' is already archived. No changes made.", shipmentID)
+		return nil
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx) // getCurrentTxTimestamp is in shipment_helpers.go
+	if err != nil {
+		return fmt.Errorf("ArchiveShipment: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment.IsArchived = true
+	shipment.LastUpdatedAt = now
+	// shipment.ArchiveReason = archiveReason // Add to model if persistent reason is needed
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID) // createShipmentCompositeKey is in shipment_helpers.go
+	shipmentBytes, errMarshal := json.Marshal(shipment)
+	if errMarshal != nil {
+		return fmt.Errorf("ArchiveShipment: failed to marshal shipment '%s': %w", shipmentID, errMarshal)
+	}
+	if errPut := ctx.GetStub().PutState(shipmentKey, shipmentBytes); errPut != nil {
+		return fmt.Errorf("ArchiveShipment: failed to save archived shipment '%s': %w", shipmentID, errPut)
+	}
+
+	s.emitShipmentEvent(ctx, "ShipmentArchived", shipment, actor, map[string]interface{}{"archiveReason": archiveReason}) // emitShipmentEvent is in shipment_helpers.go
+	logger.Infof("Shipment '%s' successfully archived by admin '%s'.", shipmentID, actor.alias)
+	return nil
+}
+
+func (s *FoodtraceSmartContract) UnarchiveShipment(ctx contractapi.TransactionContextInterface, shipmentID string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("UnarchiveShipment: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := s.requireAdmin(ctx, im); err != nil {
+		return fmt.Errorf("UnarchiveShipment: %w. Caller: %s", err, actor.alias)
+	}
+
+	logger.Infof("Admin '%s' (alias: '%s') attempting to unarchive shipment '%s'.", actor.fullID, actor.alias, shipmentID)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+
+	shipment, err := s.getShipmentByID(ctx, shipmentID)
+	if err != nil {
+		return fmt.Errorf("UnarchiveShipment: failed to get shipment '%s': %w", shipmentID, err)
+	}
+
+	if !shipment.IsArchived {
+		logger.Infof("UnarchiveShipment: Shipment '%s' is not currently archived. No changes made.", shipmentID)
+		return nil
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("UnarchiveShipment: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment.IsArchived = false
+	shipment.LastUpdatedAt = now
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	shipmentBytes, errMarshal := json.Marshal(shipment)
+	if errMarshal != nil {
+		return fmt.Errorf("UnarchiveShipment: failed to marshal shipment '%s': %w", shipmentID, errMarshal)
+	}
+	if errPut := ctx.GetStub().PutState(shipmentKey, shipmentBytes); errPut != nil {
+		return fmt.Errorf("UnarchiveShipment: failed to save unarchived shipment '%s': %w", shipmentID, errPut)
+	}
+
+	s.emitShipmentEvent(ctx, "ShipmentUnarchived", shipment, actor, nil)
+	logger.Infof("Shipment '%s' successfully unarchived by admin '%s'.", shipmentID, actor.alias)
+	return nil
+}
+
+// --- Test Helper Functions ---
+// IMPORTANT: These functions are for testing/development purposes.
+// They should be removed or heavily guarded in a production environment.
+
+func (s *FoodtraceSmartContract) TestGetCallerIdentity(ctx contractapi.TransactionContextInterface) (map[string]string, error) {
+	logger.Warning("TESTING FUNCTION TestGetCallerIdentity called. This should NOT be used in production directly.")
+	im := NewIdentityManager(ctx)
+	fullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		fullID = "ERROR_GETTING_ID: " + err.Error()
+	}
+	alias := "N/A (not registered or error)"
+	enrollID, err := im.GetCurrentEnrollmentID() // This is from IdentityManager
+	if err != nil {
+		enrollID = "ERROR_GETTING_ENROLL_ID: " + err.Error()
+	}
+	mspID, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		mspID = "ERROR_GETTING_MSPID: " + err.Error()
+	}
+
+	idInfo, errInfo := im.GetIdentityInfo(fullID) // This is from IdentityManager
+	if errInfo == nil && idInfo != nil {
+		alias = idInfo.ShortName
+		if idInfo.EnrollmentID != "" {
+			enrollID = idInfo.EnrollmentID
+		}
+	} else if fullID != "" && !strings.HasPrefix(fullID, "ERROR") { // Only log if fullID was obtained and not an error itself
+		logger.Debugf("TestGetCallerIdentity: Could not get IdentityInfo for %s: %v", fullID, errInfo)
+	}
+	return map[string]string{"fullId": fullID, "alias": alias, "enrollmentId": enrollID, "mspId": mspID}, nil
+}
+
+// contract/shipment_admin_ops.go
+
+// ...
+func (s *FoodtraceSmartContract) TestAssignRoleToSelf(ctx contractapi.TransactionContextInterface, role string) error {
+    logger.Warningf("TESTING FUNCTION TestAssignRoleToSelf called for role '%s'. This should NOT be used in production directly.", role)
+    im := NewIdentityManager(ctx)
+    actorInfoFromContract, err := s.getCurrentActorInfo(ctx) 
+    if err != nil {
+        return fmt.Errorf("TestAssignRoleToSelf: failed to get caller info: %w", err)
+    }
+
+    isCallerAdmin, adminErr := im.IsCurrentUserAdmin()
+    if adminErr != nil {
+        logger.Debugf("TestAssignRoleToSelf: Could not check admin status: %v", adminErr)
+    }
+
+    // Attempt to get existing IdentityInfo
+    _, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
+    // REMOVE THIS LINE COMPLETELY: idInfo = nil 
+    if err != nil && strings.Contains(err.Error(), "not found") {
+        logger.Infof("TestAssignRoleToSelf: Caller '%s' (alias '%s') not registered. Attempting test self-registration.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
+        
+        anyAdminExists, adminCheckErr := im.AnyAdminExists()
+        if adminCheckErr != nil {
+            return fmt.Errorf("TestAssignRoleToSelf: failed to check admin existence: %w", adminCheckErr)
+        }
+        
+        if !anyAdminExists || isCallerAdmin {
+            regErr := im.RegisterIdentity(actorInfoFromContract.fullID, actorInfoFromContract.alias, actorInfoFromContract.alias)
+            if regErr != nil {
+                return fmt.Errorf("TestAssignRoleToSelf: failed to self-register for test: %w", regErr)
+            }
+            logger.Infof("TestAssignRoleToSelf: Self-registered '%s' with alias '%s'.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
+        } else {
+            return fmt.Errorf("TestAssignRoleToSelf: cannot self-register when admins exist and caller is not admin")
+        }
+        
+        // Re-fetch after registration
+        _, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
+        if err != nil {
+            return fmt.Errorf("TestAssignRoleToSelf: failed to get IdentityInfo after self-registration: %w", err)
+        }
+    } else if err != nil {
+        return fmt.Errorf("TestAssignRoleToSelf: error getting identity info: %w", err)
+    }
+
+    // Use the unchecked role assignment for testing
+    err = im.AssignRoleUncheckedForTest(actorInfoFromContract.fullID, role)
+    if err != nil {
+        return fmt.Errorf("TestAssignRoleToSelf: AssignRoleUncheckedForTest failed for role '%s': %w", role, err)
+    }
+    
+    logger.Infof("TestAssignRoleToSelf: Successfully assigned role '%s' to self '%s' via test method.", role, actorInfoFromContract.fullID)
+    return nil
+}
+// ...
+// FIXED: Add a helper function to get full ID for alias (for Python script)
+func (s *FoodtraceSmartContract) GetFullIDForAlias(ctx contractapi.TransactionContextInterface, alias string) (string, error) {
+	im := NewIdentityManager(ctx)
+	return im.ResolveIdentity(alias)
+}package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"foodtrace/model"
+	"time"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Lifecycle: Processor Operations ---
+
+func (s *FoodtraceSmartContract) ProcessShipment(ctx contractapi.TransactionContextInterface, shipmentID string, processorDataJSON string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("ProcessShipment: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := im.RequireRole("processor"); err != nil {
+		return err
+	}
+
+	logger.Infof("Processor '%s' (alias: '%s') processing shipment '%s'", actor.fullID, actor.alias, shipmentID)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	pdArgs, err := s.validateProcessorDataArgs(processorDataJSON)
+	if err != nil {
+		return err
+	}
+
+	shipment, err := s.getShipmentByID(ctx, shipmentID)
+	if err != nil {
+		return fmt.Errorf("ProcessShipment: %w", err)
+	}
+
+	if shipment.Status != model.StatusCreated && shipment.Status != model.StatusCertified {
+		return fmt.Errorf("shipment '%s' cannot be processed. Current status: '%s'. Expected '%s' or '%s'",
+			shipmentID, shipment.Status, model.StatusCreated, model.StatusCertified)
+	}
+	if shipment.RecallInfo.IsRecalled {
+		return fmt.Errorf("recalled shipment '%s' cannot be processed", shipmentID)
+	}
+
+	if shipment.Status == model.StatusCreated {
+		if shipment.FarmerData == nil || shipment.FarmerData.DestinationProcessorID == "" {
+			return errors.New("ProcessShipment: shipment missing FarmerData or DestinationProcessorID; cannot verify processor designation")
+		}
+		if shipment.FarmerData.DestinationProcessorID != actor.fullID {
+			targetInfo, _ := im.GetIdentityInfo(shipment.FarmerData.DestinationProcessorID)
+			targetAlias := shipment.FarmerData.DestinationProcessorID
+			if targetInfo != nil {
+				targetAlias = targetInfo.ShortName
+			}
+			return fmt.Errorf("unauthorized: actor '%s' (alias: %s) is not the designated processor. Shipment intended for '%s' (alias: %s)",
+				actor.fullID, actor.alias, shipment.FarmerData.DestinationProcessorID, targetAlias)
+		}
+	}
+
+	destDistFullID, err := im.ResolveIdentity(pdArgs.DestinationDistributorID)
+	if err != nil {
+		return fmt.Errorf("ProcessShipment: failed to resolve processorData.destinationDistributorId '%s': %w", pdArgs.DestinationDistributorID, err)
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("ProcessShipment: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment.ProcessorData = &model.ProcessorData{
+		ProcessorID:              actor.fullID,
+		ProcessorAlias:           actor.alias,
+		DateProcessed:            pdArgs.DateProcessed,
+		ProcessingType:           pdArgs.ProcessingType,
+		ProcessingLineID:         pdArgs.ProcessingLineID,
+		ProcessingLocation:       pdArgs.ProcessingLocation,
+		ContaminationCheck:       pdArgs.ContaminationCheck,
+		OutputBatchID:            pdArgs.OutputBatchID,
+		ExpiryDate:               pdArgs.ExpiryDate,
+		QualityCertifications:    pdArgs.QualityCertifications,
+		DestinationDistributorID: destDistFullID,
+	}
+	shipment.Status = model.StatusProcessed
+	shipment.CurrentOwnerID = actor.fullID
+	shipment.CurrentOwnerAlias = actor.alias
+	shipment.LastUpdatedAt = now
+	ensureShipmentSchemaCompliance(shipment) // Ensure sub-fields are initialized
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	shipmentBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("ProcessShipment: failed to marshal shipment '%s': %w", shipmentID, err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, shipmentBytes); err != nil {
+		return fmt.Errorf("ProcessShipment: failed to update shipment '%s' on ledger: %w", shipmentID, err)
+	}
+
+	eventPayload := map[string]interface{}{
+		"destinationDistributorFullId": destDistFullID, "processingType": pdArgs.ProcessingType,
+		"dateProcessed": pdArgs.DateProcessed.Format(time.RFC3339), "contaminationCheck": pdArgs.ContaminationCheck,
+	}
+	s.emitShipmentEvent(ctx, "ShipmentProcessed", shipment, actor, eventPayload)
+	logger.Infof("Shipment '%s' processed by '%s'", shipmentID, actor.alias)
+	return nil
+}
+
+func (s *FoodtraceSmartContract) TransformAndCreateProducts(ctx contractapi.TransactionContextInterface,
+	inputShipmentConsumptionJSON string,
+	newProductsDataJSON string,
+	processorDataJSON string) error {
+
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("TransformAndCreateProducts: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := im.RequireRole("processor"); err != nil {
+		return fmt.Errorf("TransformAndCreateProducts: %w", err)
+	}
+
+	logger.Infof("Processor '%s' (alias: '%s') initiating transformation process (full consumption).", actor.fullID, actor.alias)
+
+	var inputConsumptionDetails []model.InputShipmentConsumptionDetail
+	if err := json.Unmarshal([]byte(inputShipmentConsumptionJSON), &inputConsumptionDetails); err != nil {
+		return fmt.Errorf("TransformAndCreateProducts: invalid inputShipmentConsumptionJSON: %w", err)
+	}
+	if len(inputConsumptionDetails) == 0 {
+		return errors.New("TransformAndCreateProducts: at least one input shipment must be specified for consumption")
+	}
+
+	var newProductDetails []model.NewProductDetail
+	if err := json.Unmarshal([]byte(newProductsDataJSON), &newProductDetails); err != nil {
+		return fmt.Errorf("TransformAndCreateProducts: invalid newProductsDataJSON: %w", err)
+	}
+	if len(newProductDetails) == 0 {
+		return errors.New("TransformAndCreateProducts: at least one new product must be specified for creation")
+	}
+
+	transformationProcessorDataArgs, err := s.validateProcessorDataArgs(processorDataJSON)
+	if err != nil {
+		return fmt.Errorf("TransformAndCreateProducts: invalid processorDataJSON for transformation event: %w", err)
+	}
+	resolvedTransformationDestDistributorID := ""
+	if transformationProcessorDataArgs.DestinationDistributorID != "" {
+		resolvedTransformationDestDistributorID, err = im.ResolveIdentity(transformationProcessorDataArgs.DestinationDistributorID)
+		if err != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to resolve DestinationDistributorID '%s' from processorDataJSON: %w", transformationProcessorDataArgs.DestinationDistributorID, err)
+		}
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("TransformAndCreateProducts: failed to get transaction timestamp: %w", err)
+	}
+
+	var consumedInputShipmentIDs []string
+	logger.Infof("TransformAndCreateProducts: Processing %d input shipments for full consumption.", len(inputConsumptionDetails))
+	for i, inputDetail := range inputConsumptionDetails {
+		fieldNamePrefix := fmt.Sprintf("inputConsumptionDetails[%d]", i)
+		if errVal := s.validateRequiredString(inputDetail.ShipmentID, fieldNamePrefix+".ShipmentID", maxStringInputLength); errVal != nil {
+			return fmt.Errorf("TransformAndCreateProducts: %w", errVal)
+		}
+
+		inputShipment, errGet := s.getShipmentByID(ctx, inputDetail.ShipmentID)
+		if errGet != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to get input shipment '%s': %w", inputDetail.ShipmentID, errGet)
+		}
+
+		if inputShipment.CurrentOwnerID != actor.fullID {
+			return fmt.Errorf("TransformAndCreateProducts: processor '%s' (alias: '%s') is not the current owner of input shipment '%s' (owner: '%s', alias: '%s')",
+				actor.fullID, actor.alias, inputDetail.ShipmentID, inputShipment.CurrentOwnerID, inputShipment.CurrentOwnerAlias)
+		}
+		validConsumableStatuses := map[model.ShipmentStatus]bool{
+			model.StatusDelivered: true, model.StatusProcessed: true, model.StatusCertified: true,
+		}
+		if !validConsumableStatuses[inputShipment.Status] {
+			return fmt.Errorf("TransformAndCreateProducts: input shipment '%s' is not in a consumable state (current: %s). Expected one of: DELIVERED, PROCESSED, CERTIFIED", inputDetail.ShipmentID, inputShipment.Status)
+		}
+		if inputShipment.RecallInfo.IsRecalled {
+			return fmt.Errorf("TransformAndCreateProducts: input shipment '%s' is recalled and cannot be consumed", inputDetail.ShipmentID)
+		}
+		if inputShipment.IsArchived {
+			return fmt.Errorf("TransformAndCreateProducts: input shipment '%s' is archived and cannot be consumed", inputDetail.ShipmentID)
+		}
+		if inputShipment.Status == model.StatusConsumedInProcessing {
+			return fmt.Errorf("TransformAndCreateProducts: input shipment '%s' has already been consumed in processing", inputDetail.ShipmentID)
+		}
+
+		inputShipment.Status = model.StatusConsumedInProcessing
+		inputShipment.Quantity = 0
+		inputShipment.LastUpdatedAt = now
+
+		inputShipmentKey, _ := s.createShipmentCompositeKey(ctx, inputDetail.ShipmentID)
+		inputShipmentBytes, errMarshal := json.Marshal(inputShipment)
+		if errMarshal != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to marshal updated input shipment '%s': %w", inputDetail.ShipmentID, errMarshal)
+		}
+		if errPut := ctx.GetStub().PutState(inputShipmentKey, inputShipmentBytes); errPut != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to save updated input shipment '%s': %w", inputDetail.ShipmentID, errPut)
+		}
+
+		s.emitShipmentEvent(ctx, "InputShipmentConsumedInTransformation", inputShipment, actor, map[string]interface{}{
+			"transformationEventOutputBatchID": transformationProcessorDataArgs.OutputBatchID,
+			"consumedQuantity":                 "FULL",
+		})
+		consumedInputShipmentIDs = append(consumedInputShipmentIDs, inputDetail.ShipmentID)
+		logger.Infof("TransformAndCreateProducts: Input shipment '%s' marked as '%s' (fully consumed).", inputDetail.ShipmentID, model.StatusConsumedInProcessing)
+	}
+
+	logger.Infof("TransformAndCreateProducts: Creating %d new output product shipments.", len(newProductDetails))
+	for i, newProdDetail := range newProductDetails {
+		fieldNamePrefix := fmt.Sprintf("newProductDetails[%d]", i)
+		if errVal := s.validateRequiredString(newProdDetail.NewShipmentID, fieldNamePrefix+".NewShipmentID", maxStringInputLength); errVal != nil {
+			return fmt.Errorf("TransformAndCreateProducts: %w", errVal)
+		}
+		if errVal := s.validateRequiredString(newProdDetail.ProductName, fieldNamePrefix+".ProductName", maxStringInputLength); errVal != nil {
+			return fmt.Errorf("TransformAndCreateProducts: %w", errVal)
+		}
+		if errVal := s.validateOptionalString(newProdDetail.Description, fieldNamePrefix+".Description", maxDescriptionLength); errVal != nil {
+			return fmt.Errorf("TransformAndCreateProducts: %w", errVal)
+		}
+		if newProdDetail.Quantity <= 0 {
+			return fmt.Errorf("TransformAndCreateProducts: %s.Quantity must be positive, got %f", fieldNamePrefix, newProdDetail.Quantity)
+		}
+		if errVal := s.validateRequiredString(newProdDetail.UnitOfMeasure, fieldNamePrefix+".UnitOfMeasure", maxStringInputLength); errVal != nil {
+			return fmt.Errorf("TransformAndCreateProducts: %w", errVal)
+		}
+
+		newShipmentKey, errKey := s.createShipmentCompositeKey(ctx, newProdDetail.NewShipmentID)
+		if errKey != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to create composite key for new product shipment '%s': %w", newProdDetail.NewShipmentID, errKey)
+		}
+		existingNewShipment, errGetExisting := ctx.GetStub().GetState(newShipmentKey)
+		if errGetExisting != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to check for existing new product shipment '%s': %w", newProdDetail.NewShipmentID, errGetExisting)
+		}
+		if existingNewShipment != nil {
+			return fmt.Errorf("TransformAndCreateProducts: new product shipment with ID '%s' already exists", newProdDetail.NewShipmentID)
+		}
+
+		outputShipment := model.Shipment{
+			ObjectType:        shipmentObjectType,
+			ID:                newProdDetail.NewShipmentID,
+			ProductName:       newProdDetail.ProductName,
+			Description:       newProdDetail.Description,
+			Quantity:          newProdDetail.Quantity,
+			UnitOfMeasure:     newProdDetail.UnitOfMeasure,
+			CurrentOwnerID:    actor.fullID,
+			CurrentOwnerAlias: actor.alias,
+			Status:            model.StatusProcessed,
+			CreatedAt:         now,
+			LastUpdatedAt:     now,
+			IsArchived:        false,
+			InputShipmentIDs:  consumedInputShipmentIDs,
+			IsDerivedProduct:  true,
+			ProcessorData: &model.ProcessorData{
+				ProcessorID:              actor.fullID,
+				ProcessorAlias:           actor.alias,
+				DateProcessed:            transformationProcessorDataArgs.DateProcessed,
+				ProcessingType:           transformationProcessorDataArgs.ProcessingType,
+				ProcessingLineID:         transformationProcessorDataArgs.ProcessingLineID,
+				ProcessingLocation:       transformationProcessorDataArgs.ProcessingLocation,
+				ContaminationCheck:       transformationProcessorDataArgs.ContaminationCheck,
+				OutputBatchID:            transformationProcessorDataArgs.OutputBatchID,
+				ExpiryDate:               transformationProcessorDataArgs.ExpiryDate,
+				QualityCertifications:    transformationProcessorDataArgs.QualityCertifications,
+				DestinationDistributorID: resolvedTransformationDestDistributorID,
+			},
+			FarmerData:           &model.FarmerData{},
+			CertificationRecords: []model.CertificationRecord{},
+			DistributorData:      &model.DistributorData{},
+			RetailerData:         &model.RetailerData{},
+			RecallInfo:           &model.RecallInfo{IsRecalled: false, LinkedShipmentIDs: []string{}},
+			History:              []model.HistoryEntry{},
+		}
+		ensureShipmentSchemaCompliance(&outputShipment)
+
+		outputShipmentBytes, errMarshal := json.Marshal(outputShipment)
+		if errMarshal != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to marshal new output shipment '%s': %w", newProdDetail.NewShipmentID, errMarshal)
+		}
+		if errPut := ctx.GetStub().PutState(newShipmentKey, outputShipmentBytes); errPut != nil {
+			return fmt.Errorf("TransformAndCreateProducts: failed to save new output shipment '%s': %w", newProdDetail.NewShipmentID, errPut)
+		}
+
+		s.emitShipmentEvent(ctx, "DerivedProductCreated", &outputShipment, actor, map[string]interface{}{
+			"transformationEventOutputBatchID": transformationProcessorDataArgs.OutputBatchID,
+			"inputShipmentIDs":                 consumedInputShipmentIDs,
+		})
+		logger.Infof("TransformAndCreateProducts: New output product '%s' (ID: '%s') created.", newProdDetail.ProductName, newProdDetail.NewShipmentID)
+	}
+
+	logger.Infof("TransformAndCreateProducts: Transformation process completed successfully by processor '%s'. %d inputs consumed, %d new products created.",
+		actor.alias, len(inputConsumptionDetails), len(newProductDetails))
+	return nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"foodtrace/model" // Correct and clean import based on your go.mod
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+	"github.com/hyperledger/fabric/common/flogging"
+)
+
+var idLogger = flogging.MustGetLogger("foodtrace.identitymanager")
+
+// Object types for composite keys, also usable as 'docType' or 'objectType' in CouchDB.
+const (
+	identityObjectType  = "IdentityInfo" // Stores IdentityInfo objects. Attribute for composite key: FullID.
+	aliasObjectType     = "Alias"        // Maps ShortName (alias) to FullID. Attribute for composite key: ShortName.
+	adminFlagObjectType = "AdminFlag"    // Stores a flag for admin status. Attribute for composite key: FullID.
+)
+
+// ValidRoles defines the set of permissible roles in the system.
+var ValidRoles = map[string]bool{
+	"farmer":      true,
+	"processor":   true,
+	"distributor": true,
+	"retailer":    true,
+	"certifier":   true, // <<< NEWLY ADDED ROLE
+	// "admin" is a special status, managed by IsAdmin, not a role in this list.
+}
+
+// IdentityManager handles identity registration, role management, and admin privileges.
+type IdentityManager struct {
+	Ctx contractapi.TransactionContextInterface
+}
+
+// NewIdentityManager creates a new instance of IdentityManager.
+func NewIdentityManager(ctx contractapi.TransactionContextInterface) *IdentityManager {
+	return &IdentityManager{Ctx: ctx}
+}
+
+// --- Internal Helper Functions ---
+
+func (im *IdentityManager) getCurrentTxTimestamp() (time.Time, error) {
+	ts, err := im.Ctx.GetStub().GetTxTimestamp()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to get transaction timestamp: %w", err)
+	}
+	return ts.AsTime(), nil
+}
+
+func isValidX509ID(id string) bool {
+	// Basic check, can be enhanced if specific X.509 formats are enforced.
+	return strings.HasPrefix(id, "x509::") || strings.HasPrefix(id, "eDUwOTo6") // "eDUwOTo6" is "x509::" base64 encoded
+}
+
+func (im *IdentityManager) getListOfValidRoles() []string {
+	keys := make([]string, 0, len(ValidRoles))
+	for k := range ValidRoles {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// --- Key Creation Helpers (using Composite Keys) ---
+
+func (im *IdentityManager) createIdentityCompositeKey(fullID string) (string, error) {
+	return im.Ctx.GetStub().CreateCompositeKey(identityObjectType, []string{fullID})
+}
+
+func (im *IdentityManager) createAliasCompositeKey(shortName string) (string, error) {
+	return im.Ctx.GetStub().CreateCompositeKey(aliasObjectType, []string{shortName})
+}
+
+func (im *IdentityManager) createAdminFlagCompositeKey(fullID string) (string, error) {
+	return im.Ctx.GetStub().CreateCompositeKey(adminFlagObjectType, []string{fullID})
+}
+
+// --- Public Identity Management Functions ---
+
+func (im *IdentityManager) RegisterIdentity(targetFullID, shortName, enrollmentID string) error {
+	// Check if any admin exists. If not, this is a bootstrap scenario for RegisterIdentity.
+	anyAdminCurrentlyExists, err := im.AnyAdminExists()
+	if err != nil {
+		return fmt.Errorf("failed to check if any admin exists during RegisterIdentity: %w", err)
+	}
+
+	callerFullID, err := im.GetCurrentIdentityFullID() // Get caller ID early for logging/use
+	if err != nil {
+		// If we can't get the caller ID, it might be a very early bootstrap or error
+		idLogger.Warningf("RegisterIdentity: Could not get current caller's FullID: %v", err)
+		// Depending on policy, might allow if no admins exist, or deny.
+		// For now, let it proceed if no admins exist, but this is a risky state.
+		if anyAdminCurrentlyExists { // If admins exist, not knowing caller is definitely a problem.
+			return fmt.Errorf("failed to get current caller's FullID: %w", err)
+		}
+		callerFullID = "SYSTEM_BOOTSTRAP" // Placeholder if no admins and no caller ID
+	}
+
+	if anyAdminCurrentlyExists { // If admins DO exist, then the caller MUST be an admin
+		isCallerAdmin, errAdminCheck := im.IsCurrentUserAdmin() // This uses the resolved callerFullID
+		if errAdminCheck != nil {
+			return fmt.Errorf("failed to verify caller admin status for RegisterIdentity: %w", errAdminCheck)
+		}
+		if !isCallerAdmin {
+			return fmt.Errorf("caller '%s' is not authorized to register identities as admins already exist in the system", callerFullID)
+		}
+		idLogger.Infof("RegisterIdentity authorized: Caller '%s' is admin.", callerFullID)
+	} else {
+		idLogger.Infof("RegisterIdentity proceeding in bootstrap mode (no admins exist or caller ID not available): Caller assumed '%s'.", callerFullID)
+	}
+
+	if !isValidX509ID(targetFullID) {
+		return fmt.Errorf("targetFullID '%s' is not a valid X.509 ID format", targetFullID)
+	}
+	if strings.TrimSpace(shortName) == "" {
+		return errors.New("shortName cannot be empty")
+	}
+	// EnrollmentID can be empty, it's optional or might be derived.
+
+	now, err := im.getCurrentTxTimestamp()
+	if err != nil {
+		return err
+	}
+
+	// Get target's MSPID from the caller's context. This assumes the admin registering
+	// the identity is doing so for an identity within their own MSP or an MSP they manage.
+	// If registering for a *different* MSP, this would need to be an explicit parameter.
+	targetMSPID := ""
+	clientIdentity := im.Ctx.GetClientIdentity()
+	if clientIdentity != nil { // Check if clientIdentity is available (might not be in some test/bootstrap scenarios)
+		mspID, mspErr := clientIdentity.GetMSPID()
+		if mspErr != nil {
+			idLogger.Warningf("Could not determine MSPID for identity %s from caller's context: %v. Storing empty MSPID.", targetFullID, mspErr)
+		} else {
+			targetMSPID = mspID
+		}
+	} else {
+		idLogger.Warningf("ClientIdentity not available from context for determining MSPID for %s. Storing empty MSPID.", targetFullID)
+	}
+
+	aliasKey, err := im.createAliasCompositeKey(shortName)
+	if err != nil {
+		return fmt.Errorf("failed to create alias composite key for '%s': %w", shortName, err)
+	}
+	existingFullIDForAliasBytes, err := im.Ctx.GetStub().GetState(aliasKey)
+	if err != nil {
+		return fmt.Errorf("failed to check alias availability for '%s': %w", shortName, err)
+	}
+	if existingFullIDForAliasBytes != nil && string(existingFullIDForAliasBytes) != targetFullID {
+		return fmt.Errorf("shortName (alias) '%s' is already in use by identity '%s'", shortName, string(existingFullIDForAliasBytes))
+	}
+
+	identityKey, err := im.createIdentityCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("failed to create identity composite key for '%s': %w", targetFullID, err)
+	}
+	identityInfoBytes, err := im.Ctx.GetStub().GetState(identityKey)
+	if err != nil {
+		return fmt.Errorf("failed to get identity state for '%s': %w", targetFullID, err)
+	}
+
+	var idInfo model.IdentityInfo
+	if identityInfoBytes == nil {
+		idInfo = model.IdentityInfo{
+			ObjectType:      identityObjectType,
+			FullID:          targetFullID,
+			ShortName:       shortName,
+			EnrollmentID:    enrollmentID,
+			OrganizationMSP: targetMSPID,
+			Roles:           []string{},
+			IsAdmin:         false,
+			RegisteredBy:    callerFullID, // Could be "SYSTEM_BOOTSTRAP" if no admins yet
+			RegisteredAt:    now,
+			LastUpdatedAt:   now,
+		}
+		idLogger.Infof("Registering new identity: %s with alias %s, MSP %s, by %s", targetFullID, shortName, targetMSPID, idInfo.RegisteredBy)
+	} else {
+		if err := json.Unmarshal(identityInfoBytes, &idInfo); err != nil {
+			return fmt.Errorf("failed to unmarshal existing IdentityInfo for '%s': %w", targetFullID, err)
+		}
+		if idInfo.ShortName != shortName && idInfo.ShortName != "" {
+			oldAliasKey, keyErr := im.createAliasCompositeKey(idInfo.ShortName)
+			if keyErr == nil {
+				if errDel := im.Ctx.GetStub().DelState(oldAliasKey); errDel != nil {
+					idLogger.Warningf("Failed to delete old alias key '%s' for identity '%s': %v", oldAliasKey, targetFullID, errDel)
+				}
+			} else {
+				idLogger.Warningf("Failed to create key for old alias '%s' for deletion: %v", idInfo.ShortName, keyErr)
+			}
+		}
+		idInfo.ShortName = shortName
+		idInfo.EnrollmentID = enrollmentID   // Update enrollment ID
+		idInfo.OrganizationMSP = targetMSPID // Update MSP ID
+		idInfo.LastUpdatedAt = now
+		// idInfo.RegisteredBy and idInfo.RegisteredAt should remain from original registration
+		idLogger.Infof("Updating existing identity: %s with new alias %s, MSP %s. Updated by %s", targetFullID, shortName, targetMSPID, callerFullID)
+	}
+
+	updatedIdentityInfoBytes, err := json.Marshal(idInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal IdentityInfo for '%s': %w", targetFullID, err)
+	}
+	if err := im.Ctx.GetStub().PutState(identityKey, updatedIdentityInfoBytes); err != nil {
+		return fmt.Errorf("failed to save IdentityInfo for '%s': %w", targetFullID, err)
+	}
+
+	if err := im.Ctx.GetStub().PutState(aliasKey, []byte(targetFullID)); err != nil {
+		return fmt.Errorf("failed to save alias mapping for '%s' -> '%s' (IdentityInfo saved, but alias mapping failed): %w", shortName, targetFullID, err)
+	}
+
+	return nil
+}
+
+// Improved ResolveIdentity with better handling for test scenarios
+func (im *IdentityManager) ResolveIdentity(identityOrAlias string) (string, error) {
+	trimmedInput := strings.TrimSpace(identityOrAlias)
+	if trimmedInput == "" {
+		return "", errors.New("identityOrAlias cannot be empty")
+	}
+
+	// If it's already a full X.509 ID, return as-is
+	if isValidX509ID(trimmedInput) {
+		return trimmedInput, nil
+	}
+
+	// Try to resolve as alias
+	aliasKey, err := im.createAliasCompositeKey(trimmedInput)
+	if err != nil {
+		return "", fmt.Errorf("failed to create alias composite key for resolving '%s': %w", trimmedInput, err)
+	}
+	fullIDBytes, err := im.Ctx.GetStub().GetState(aliasKey)
+	if err != nil {
+		return "", fmt.Errorf("ledger error when querying alias '%s': %w", trimmedInput, err)
+	}
+	if fullIDBytes != nil {
+		return string(fullIDBytes), nil
+	}
+
+	// For test scenarios, if alias not found, log but still return error
+	idLogger.Debugf("Alias '%s' not found in ledger. In test scenarios, this might be expected.", trimmedInput)
+	return "", fmt.Errorf("alias '%s' not found", trimmedInput)
+}
+
+// Add a test-friendly identity resolution method
+func (im *IdentityManager) ResolveIdentityForTest(identityOrAlias string) (string, error) {
+	// Try normal resolution first
+	resolved, err := im.ResolveIdentity(identityOrAlias)
+	if err == nil {
+		return resolved, nil
+	}
+
+	// If not found and it looks like an alias, generate a test full ID
+	if !isValidX509ID(identityOrAlias) {
+		testFullID := fmt.Sprintf("x509::%s::OU=client::CN=%s", identityOrAlias, identityOrAlias)
+		idLogger.Debugf("ResolveIdentityForTest: Generated test full ID '%s' for alias '%s'", testFullID, identityOrAlias)
+		return testFullID, nil
+	}
+
+	return "", err
+}
+
+func (im *IdentityManager) GetIdentityInfo(identityOrAlias string) (*model.IdentityInfo, error) {
+	fullID, err := im.ResolveIdentity(identityOrAlias)
+	if err != nil {
+		return nil, err // Error from ResolveIdentity is descriptive enough
+	}
+	return im.getIdentityInfoByFullID(fullID)
+}
+
+func (im *IdentityManager) getIdentityInfoByFullID(fullID string) (*model.IdentityInfo, error) {
+	if !isValidX509ID(fullID) { // Should already be validated if coming via ResolveIdentity
+		return nil, fmt.Errorf("'%s' is not a valid X.509 ID format for getIdentityInfoByFullID", fullID)
+	}
+	identityKey, err := im.createIdentityCompositeKey(fullID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create identity composite key for '%s': %w", fullID, err)
+	}
+	identityInfoBytes, err := im.Ctx.GetStub().GetState(identityKey)
+	if err != nil {
+		return nil, fmt.Errorf("ledger error retrieving IdentityInfo for FullID '%s': %w", fullID, err)
+	}
+	if identityInfoBytes == nil {
+		return nil, fmt.Errorf("identity record not found for FullID '%s'", fullID)
+	}
+	var idInfo model.IdentityInfo
+	if err := json.Unmarshal(identityInfoBytes, &idInfo); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal IdentityInfo for FullID '%s': %w", fullID, err)
+	}
+	return &idInfo, nil
+}
+
+func (im *IdentityManager) AssignRole(targetIdentityOrAlias, role string) error {
+	callerFullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		return fmt.Errorf("failed to get caller's FullID for AssignRole: %w", err)
+	}
+	isCallerAdmin, err := im.IsAdmin(callerFullID) // Check if the specific caller is admin
+	if err != nil {
+		return fmt.Errorf("failed to verify caller admin status for AssignRole: %w", err)
+	}
+	if !isCallerAdmin {
+		return fmt.Errorf("caller '%s' is not authorized to assign roles", callerFullID)
+	}
+
+	roleLower := strings.ToLower(strings.TrimSpace(role))
+	if !ValidRoles[roleLower] {
+		return fmt.Errorf("invalid role: '%s'. Valid roles are: %v", role, im.getListOfValidRoles())
+	}
+
+	targetFullID, err := im.ResolveIdentity(targetIdentityOrAlias)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target identity '%s' for AssignRole: %w", targetIdentityOrAlias, err)
+	}
+
+	idInfo, err := im.getIdentityInfoByFullID(targetFullID)
+	if err != nil {
+		return fmt.Errorf("cannot assign role: target identity '%s' (resolved to '%s') must be registered first: %w", targetIdentityOrAlias, targetFullID, err)
+	}
+
+	for _, existingRole := range idInfo.Roles {
+		if existingRole == roleLower {
+			idLogger.Infof("Role '%s' already assigned to identity '%s' (%s). No action needed.", roleLower, idInfo.ShortName, targetFullID)
+			return nil
+		}
+	}
+
+	now, err := im.getCurrentTxTimestamp()
+	if err != nil {
+		return err
+	}
+	idInfo.Roles = append(idInfo.Roles, roleLower)
+	idInfo.LastUpdatedAt = now
+
+	updatedBytes, err := json.Marshal(idInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal IdentityInfo for role assignment: %w", err)
+	}
+	identityKey, err := im.createIdentityCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("failed to create identity key for role assignment: %w", err)
+	}
+
+	if err := im.Ctx.GetStub().PutState(identityKey, updatedBytes); err != nil {
+		return fmt.Errorf("failed to save IdentityInfo after role assignment for '%s': %w", targetFullID, err)
+	}
+	idLogger.Infof("Role '%s' successfully assigned to identity '%s' (%s) by admin '%s'.", roleLower, idInfo.ShortName, targetFullID, callerFullID)
+	return nil
+}
+
+func (im *IdentityManager) RemoveRole(targetIdentityOrAlias, role string) error {
+	callerFullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		return fmt.Errorf("failed to get caller's FullID for RemoveRole: %w", err)
+	}
+	isCallerAdmin, err := im.IsAdmin(callerFullID)
+	if err != nil {
+		return fmt.Errorf("failed to verify caller admin status for RemoveRole: %w", err)
+	}
+	if !isCallerAdmin {
+		return fmt.Errorf("caller '%s' is not authorized to remove roles", callerFullID)
+	}
+
+	roleLower := strings.ToLower(strings.TrimSpace(role))
+	// No need to check if roleLower is in ValidRoles, as we are removing it.
+
+	targetFullID, err := im.ResolveIdentity(targetIdentityOrAlias)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target identity '%s' for RemoveRole: %w", targetIdentityOrAlias, err)
+	}
+
+	idInfo, err := im.getIdentityInfoByFullID(targetFullID)
+	if err != nil {
+		return fmt.Errorf("cannot remove role: target identity '%s' (resolved to '%s') not found: %w", targetIdentityOrAlias, targetFullID, err)
+	}
+
+	found := false
+	newRoles := []string{}
+	for _, r := range idInfo.Roles {
+		if r == roleLower {
+			found = true
+		} else {
+			newRoles = append(newRoles, r)
+		}
+	}
+
+	if !found {
+		idLogger.Infof("Role '%s' not found for identity '%s' (%s). No action taken for removal.", roleLower, idInfo.ShortName, targetFullID)
+		return nil
+	}
+
+	now, err := im.getCurrentTxTimestamp()
+	if err != nil {
+		return err
+	}
+	idInfo.Roles = newRoles
+	idInfo.LastUpdatedAt = now
+
+	updatedBytes, err := json.Marshal(idInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal IdentityInfo for role removal: %w", err)
+	}
+	identityKey, err := im.createIdentityCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("failed to create identity key for role removal: %w", err)
+	}
+
+	if err := im.Ctx.GetStub().PutState(identityKey, updatedBytes); err != nil {
+		return fmt.Errorf("failed to save IdentityInfo after role removal for '%s': %w", targetFullID, err)
+	}
+	idLogger.Infof("Role '%s' successfully removed from identity '%s' (%s) by admin '%s'.", roleLower, idInfo.ShortName, targetFullID, callerFullID)
+	return nil
+}
+
+func (im *IdentityManager) HasRole(identityOrAlias, role string) (bool, error) {
+	idInfo, err := im.GetIdentityInfo(identityOrAlias)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") { // If identity itself not found, it has no roles.
+			return false, nil
+		}
+		return false, fmt.Errorf("error resolving identity '%s' to check role: %w", identityOrAlias, err)
+	}
+	roleLower := strings.ToLower(strings.TrimSpace(role))
+	for _, r := range idInfo.Roles {
+		if r == roleLower {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (im *IdentityManager) RequireRole(requiredRole string) error {
+	callerFullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		return fmt.Errorf("failed to get current user's FullID for RequireRole: %w", err)
+	}
+
+	isAdmin, err := im.IsAdmin(callerFullID) // Check if the specific caller is admin
+	if err != nil {
+		return fmt.Errorf("failed to check current user '%s' admin status for RequireRole: %w", callerFullID, err)
+	}
+	if isAdmin {
+		idLogger.Debugf("Admin user '%s' authorized for role '%s' check (bypassed role requirement).", callerFullID, requiredRole)
+		return nil
+	}
+
+	has, err := im.HasRole(callerFullID, requiredRole)
+	if err != nil {
+		return fmt.Errorf("error checking role '%s' for current user '%s': %w", requiredRole, callerFullID, err)
+	}
+	if !has {
+		return fmt.Errorf("unauthorized: identity '%s' does not have required role '%s'", callerFullID, requiredRole)
+	}
+	idLogger.Debugf("Role check passed for role '%s' for user '%s'.", requiredRole, callerFullID)
+	return nil
+}
+
+func (im *IdentityManager) MakeAdmin(targetIdentityOrAlias string) error {
+	anyAdminExists, err := im.AnyAdminExists()
+	if err != nil {
+		return fmt.Errorf("failed to check if any admin exists for MakeAdmin: %w", err)
+	}
+
+	callerFullID := MustGetCallerFullID(im.Ctx) // Get current caller's ID (utility function)
+	if anyAdminExists {
+		isCallerAdmin, errAdm := im.IsAdmin(callerFullID)
+		if errAdm != nil {
+			return fmt.Errorf("failed to verify caller '%s' admin status for MakeAdmin: %w", callerFullID, errAdm)
+		}
+		if !isCallerAdmin {
+			return fmt.Errorf("caller '%s' is not authorized to make others admin", callerFullID)
+		}
+	} else {
+		// This is a bootstrap scenario for making the *first* admin(s).
+		// The caller (e.g., instantiator of BootstrapLedger) is effectively self-authorizing here.
+		idLogger.Infof("No admins exist. Bootstrap: Caller '%s' is making target '%s' an admin.", callerFullID, targetIdentityOrAlias)
+	}
+
+	targetFullID, err := im.ResolveIdentity(targetIdentityOrAlias)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target identity '%s' to make admin: %w", targetIdentityOrAlias, err)
+	}
+
+	idInfo, err := im.getIdentityInfoByFullID(targetFullID)
+	if err != nil {
+		return fmt.Errorf("cannot make admin: target identity '%s' (resolved to '%s') must be registered first: %w", targetIdentityOrAlias, targetFullID, err)
+	}
+
+	adminFlagKey, err := im.createAdminFlagCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("failed to create admin flag key for MakeAdmin: %w", err)
+	}
+
+	if idInfo.IsAdmin { // Also check the flag to ensure consistency
+		flagBytes, _ := im.Ctx.GetStub().GetState(adminFlagKey)
+		if flagBytes != nil && string(flagBytes) == "true" {
+			idLogger.Infof("Identity '%s' (%s) is already an admin (both in IdentityInfo and AdminFlag). No action needed.", idInfo.ShortName, targetFullID)
+			return nil
+		}
+		idLogger.Warningf("Identity '%s' (%s) IsAdmin flag in IdentityInfo is true, but AdminFlag might be missing/false. Proceeding to set both.", idInfo.ShortName, targetFullID)
+	}
+
+	now, err := im.getCurrentTxTimestamp()
+	if err != nil {
+		return err
+	}
+	idInfo.IsAdmin = true
+	idInfo.LastUpdatedAt = now
+
+	updatedBytes, err := json.Marshal(idInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal IdentityInfo for MakeAdmin: %w", err)
+	}
+	identityKey, err := im.createIdentityCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("failed to create identity key for MakeAdmin: %w", err)
+	}
+
+	// Transactionality: Update IdentityInfo first, then AdminFlag. If AdminFlag fails, attempt to roll back IdentityInfo.
+	if err := im.Ctx.GetStub().PutState(identityKey, updatedBytes); err != nil {
+		return fmt.Errorf("failed to save IdentityInfo after setting IsAdmin for '%s': %w", targetFullID, err)
+	}
+	if err := im.Ctx.GetStub().PutState(adminFlagKey, []byte("true")); err != nil {
+		// Attempt to roll back IsAdmin in IdentityInfo
+		idLogger.Errorf("CRITICAL: Failed to set admin flag for '%s' after updating IdentityInfo. Attempting rollback of IsAdmin in IdentityInfo.", targetFullID)
+		idInfo.IsAdmin = false                               // Rollback
+		idInfo.LastUpdatedAt, _ = im.getCurrentTxTimestamp() // Update timestamp for rollback action
+		updatedBytesRollback, _ := json.Marshal(idInfo)
+		// No error check on identityKey creation as it succeeded before
+		if errRb := im.Ctx.GetStub().PutState(identityKey, updatedBytesRollback); errRb != nil {
+			idLogger.Errorf("CRITICAL ROLLBACK FAILURE: Failed to set admin flag for '%s' AND FAILED TO ROLLBACK IdentityInfo.IsAdmin. State is inconsistent. Original flag error: %v. Rollback error: %v", targetFullID, err, errRb)
+		} else {
+			idLogger.Infof("SUCCESSFUL ROLLBACK: Failed to set admin flag for '%s'. Rolled back IsAdmin in IdentityInfo. Original flag error: %v", targetFullID, err)
+		}
+		return fmt.Errorf("failed to set admin flag for '%s' (IdentityInfo.IsAdmin change was rolled back): %w", targetFullID, err)
+	}
+	idLogger.Infof("Identity '%s' (%s) has been made an admin by '%s'. Both IdentityInfo and AdminFlag updated.", idInfo.ShortName, targetFullID, callerFullID)
+	return nil
+}
+
+func (im *IdentityManager) RemoveAdmin(targetIdentityOrAlias string) error {
+	callerFullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		return fmt.Errorf("failed to get caller's FullID for RemoveAdmin: %w", err)
+	}
+	isCallerAdmin, err := im.IsAdmin(callerFullID)
+	if err != nil {
+		return fmt.Errorf("failed to verify caller '%s' admin status for RemoveAdmin: %w", callerFullID, err)
+	}
+	if !isCallerAdmin {
+		return fmt.Errorf("caller '%s' is not authorized to remove admin privileges", callerFullID)
+	}
+
+	targetFullID, err := im.ResolveIdentity(targetIdentityOrAlias)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target identity '%s' to remove admin: %w", targetIdentityOrAlias, err)
+	}
+
+	if targetFullID == callerFullID {
+		return errors.New("admins cannot remove their own admin status")
+	}
+
+	adminFlagKey, err := im.createAdminFlagCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("failed to create admin flag key for RemoveAdmin: %w", err)
+	}
+
+	idInfo, err := im.getIdentityInfoByFullID(targetFullID)
+	if err != nil { // IdentityInfo record might not exist, but flag might.
+		idLogger.Warningf("IdentityInfo record for '%s' (resolved to '%s') not found during RemoveAdmin. Checking admin flag directly.", targetIdentityOrAlias, targetFullID)
+		flagBytes, getErr := im.Ctx.GetStub().GetState(adminFlagKey)
+		if getErr != nil {
+			return fmt.Errorf("error checking admin flag for '%s' (IdentityInfo not found): %w", targetFullID, getErr)
+		}
+		if flagBytes != nil { // Flag exists, delete it.
+			if errDel := im.Ctx.GetStub().DelState(adminFlagKey); errDel != nil {
+				return fmt.Errorf("failed to remove admin flag for '%s' (IdentityInfo not found, flag deletion error): %w", targetFullID, errDel)
+			}
+			idLogger.Infof("Admin flag removed for '%s' (IdentityInfo was not found). Action by '%s'.", targetFullID, callerFullID)
+			return nil
+		}
+		// Neither IdentityInfo nor admin flag found.
+		return fmt.Errorf("cannot remove admin: target identity '%s' (resolved to '%s') not found and no admin flag present: %w", targetIdentityOrAlias, targetFullID, err)
+	}
+
+	// IdentityInfo exists, now check its IsAdmin status and the flag
+	if !idInfo.IsAdmin {
+		idLogger.Infof("Identity '%s' (%s) IsAdmin is already false. Ensuring admin flag is also cleared.", idInfo.ShortName, targetFullID)
+		_ = im.Ctx.GetStub().DelState(adminFlagKey) // Best effort to clear flag if it was somehow set
+		return nil
+	}
+
+	now, err := im.getCurrentTxTimestamp()
+	if err != nil {
+		return err
+	}
+	idInfo.IsAdmin = false
+	idInfo.LastUpdatedAt = now
+
+	updatedBytes, err := json.Marshal(idInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal IdentityInfo for RemoveAdmin: %w", err)
+	}
+	identityKey, err := im.createIdentityCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("failed to create identity key for RemoveAdmin: %w", err)
+	}
+
+	// Transactionality: Update IdentityInfo first, then AdminFlag. If AdminFlag fails, attempt to roll back IdentityInfo.
+	if err := im.Ctx.GetStub().PutState(identityKey, updatedBytes); err != nil {
+		return fmt.Errorf("failed to save IdentityInfo after clearing IsAdmin for '%s': %w", targetFullID, err)
+	}
+	if err := im.Ctx.GetStub().DelState(adminFlagKey); err != nil {
+		// Attempt to roll back IsAdmin in IdentityInfo
+		idLogger.Errorf("CRITICAL: Failed to delete admin flag for '%s' after updating IdentityInfo. Attempting rollback of IsAdmin in IdentityInfo.", targetFullID)
+		idInfo.IsAdmin = true // Rollback
+		idInfo.LastUpdatedAt, _ = im.getCurrentTxTimestamp()
+		updatedBytesRollback, _ := json.Marshal(idInfo)
+		if errRb := im.Ctx.GetStub().PutState(identityKey, updatedBytesRollback); errRb != nil {
+			idLogger.Errorf("CRITICAL ROLLBACK FAILURE: Failed to delete admin flag for '%s' AND FAILED TO ROLLBACK IdentityInfo.IsAdmin. State is inconsistent. Original flag error: %v. Rollback error: %v", targetFullID, err, errRb)
+		} else {
+			idLogger.Infof("SUCCESSFUL ROLLBACK: Failed to delete admin flag for '%s'. Rolled back IsAdmin in IdentityInfo. Original flag error: %v", targetFullID, err)
+		}
+		return fmt.Errorf("failed to delete admin flag for '%s' (IdentityInfo.IsAdmin change was rolled back): %w", targetFullID, err)
+	}
+	idLogger.Infof("Admin privileges removed from identity '%s' (%s) by '%s'. Both IdentityInfo and AdminFlag updated/cleared.", idInfo.ShortName, targetFullID, callerFullID)
+	return nil
+}
+
+// IsAdmin checks if an identity has admin privileges primarily based on the AdminFlag.
+// It can optionally cross-check with IdentityInfo.IsAdmin if needed, but AdminFlag is authoritative.
+func (im *IdentityManager) IsAdmin(identityOrAlias string) (bool, error) {
+	fullID, err := im.ResolveIdentity(identityOrAlias)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") { // Identity/Alias not found means not admin.
+			return false, nil
+		}
+		return false, fmt.Errorf("error resolving identity '%s' for IsAdmin check: %w", identityOrAlias, err)
+	}
+	adminFlagKey, err := im.createAdminFlagCompositeKey(fullID)
+	if err != nil {
+		return false, fmt.Errorf("failed to create admin flag key for IsAdmin check on '%s': %w", fullID, err)
+	}
+
+	flagBytes, err := im.Ctx.GetStub().GetState(adminFlagKey)
+	if err != nil {
+		return false, fmt.Errorf("ledger error checking admin flag for '%s': %w", fullID, err)
+	}
+
+	isAdminByFlag := flagBytes != nil && string(flagBytes) == "true"
+
+	// Optional: Cross-check with IdentityInfo for consistency, log if different.
+	// idInfo, _ := im.getIdentityInfoByFullID(fullID)
+	// if idInfo != nil && idInfo.IsAdmin != isAdminByFlag {
+	// 	idLogger.Warningf("Admin status mismatch for %s: AdminFlag is %v, IdentityInfo.IsAdmin is %v. AdminFlag is authoritative.", fullID, isAdminByFlag, idInfo.IsAdmin)
+	// }
+	return isAdminByFlag, nil
+}
+
+func (im *IdentityManager) IsCurrentUserAdmin() (bool, error) {
+	callerFullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		return false, fmt.Errorf("failed to get current user's FullID for admin check: %w", err)
+	}
+	return im.IsAdmin(callerFullID)
+}
+
+// AnyAdminExists checks if any admin flag is set on the ledger.
+func (im *IdentityManager) AnyAdminExists() (bool, error) {
+	iterator, err := im.Ctx.GetStub().GetStateByPartialCompositeKey(adminFlagObjectType, []string{})
+	if err != nil {
+		return false, fmt.Errorf("failed to query admin records for AnyAdminExists: %w", err)
+	}
+	defer iterator.Close() // Ensure iterator is closed
+	return iterator.HasNext(), nil
+}
+
+// GetCurrentIdentityFullID retrieves the full X.509 ID of the current transactor.
+func (im *IdentityManager) GetCurrentIdentityFullID() (string, error) {
+	clientIdentity := im.Ctx.GetClientIdentity()
+	if clientIdentity == nil {
+		return "", errors.New("client identity is nil from context")
+	}
+	id, err := clientIdentity.GetID()
+	if err != nil {
+		return "", fmt.Errorf("failed to get client identity ID from context: %w", err)
+	}
+	if id == "" { // GetID can sometimes return empty string without error if not properly set up
+		return "", errors.New("client identity ID from context is empty")
+	}
+	if !isValidX509ID(id) {
+		idLogger.Warningf("Current client ID '%s' does not appear to be a standard X.509 format.", id)
+	}
+	return id, nil
+}
+
+// MustGetCallerFullID is a utility to get the caller's ID, returning a placeholder on error.
+// Useful for logging when a full error return isn't desired.
+func MustGetCallerFullID(ctx contractapi.TransactionContextInterface) string {
+	clientIdentity := ctx.GetClientIdentity()
+	if clientIdentity == nil {
+		idLogger.Error("MustGetCallerFullID: Client identity is nil from context. Returning placeholder.")
+		return "ERROR_NIL_CLIENT_IDENTITY"
+	}
+	id, err := clientIdentity.GetID()
+	if err != nil {
+		idLogger.Errorf("MustGetCallerFullID: Failed to get client identity ID: %v. Returning placeholder.", err)
+		return "ERROR_GETTING_CALLER_ID"
+	}
+	if id == "" {
+		idLogger.Error("MustGetCallerFullID: Client identity ID from context is empty. Returning placeholder.")
+		return "ERROR_EMPTY_CALLER_ID"
+	}
+	return id
+}
+
+// GetCurrentEnrollmentID tries to get the enrollment ID from attributes or stored IdentityInfo.
+func (im *IdentityManager) GetCurrentEnrollmentID() (string, error) {
+	clientIdentity := im.Ctx.GetClientIdentity()
+	if clientIdentity == nil {
+		return "", errors.New("client identity is nil from context for GetCurrentEnrollmentID")
+	}
+
+	enrollmentID, found, errAttr := clientIdentity.GetAttributeValue("hf.EnrollmentID")
+	if errAttr != nil {
+		idLogger.Warningf("Error retrieving hf.EnrollmentID attribute: %v. Will try stored IdentityInfo.", errAttr)
+	}
+	if found && enrollmentID != "" {
+		return enrollmentID, nil
+	}
+
+	// Fallback to checking stored IdentityInfo
+	callerFullID, errFullID := im.GetCurrentIdentityFullID() // Uses the more robust GetCurrentIdentityFullID
+	if errFullID == nil && callerFullID != "" {
+		idInfo, errInfo := im.getIdentityInfoByFullID(callerFullID)
+		if errInfo == nil && idInfo != nil && idInfo.EnrollmentID != "" {
+			idLogger.Debugf("Retrieved EnrollmentID '%s' from stored IdentityInfo for %s.", idInfo.EnrollmentID, callerFullID)
+			return idInfo.EnrollmentID, nil
+		}
+		if errInfo != nil {
+			idLogger.Debugf("Could not get stored IdentityInfo for %s to find EnrollmentID: %v", callerFullID, errInfo)
+		} else if idInfo == nil || idInfo.EnrollmentID == "" {
+			idLogger.Debugf("Stored IdentityInfo for %s found but EnrollmentID is empty.", callerFullID)
+		}
+	} else if errFullID != nil {
+		idLogger.Warningf("Could not get current FullID to check stored EnrollmentID: %v", errFullID)
+	}
+
+	// Further fallback to MSPID if other methods fail
+	mspID, errMSPID := clientIdentity.GetMSPID()
+	if errMSPID != nil {
+		return "", fmt.Errorf("failed to get client MSPID as fallback for enrollment ID, and other methods failed (hf.EnrollmentID attr error: %v; FullID error: %v)", errAttr, errFullID)
+	}
+	if mspID == "" {
+		return "", errors.New("failed to get client MSPID as fallback (MSPID is empty), and other methods for enrollment ID failed")
+	}
+
+	idLogger.Debugf("hf.EnrollmentID not found in attributes or stored IdentityInfo, using MSPID '%s' as EnrollmentID for current user '%s'.", mspID, callerFullID)
+	return mspID, nil
+}
+
+func (im *IdentityManager) GetAllRegisteredIdentities() ([]model.IdentityInfo, error) {
+	callerFullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get caller's FullID for GetAllRegisteredIdentities: %w", err)
+	}
+	isCallerAdmin, err := im.IsAdmin(callerFullID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify caller '%s' admin status for GetAllRegisteredIdentities: %w", callerFullID, err)
+	}
+	if !isCallerAdmin {
+		return nil, fmt.Errorf("caller '%s' is not authorized to list all identities", callerFullID)
+	}
+
+	resultsIterator, err := im.Ctx.GetStub().GetStateByPartialCompositeKey(identityObjectType, []string{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get identities iterator using objectType '%s': %w", identityObjectType, err)
+	}
+	defer resultsIterator.Close()
+
+	// FIXED: Initialize as empty slice, not nil
+	identities := []model.IdentityInfo{}
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			idLogger.Warningf("Failed to get next identity from iterator during GetAllRegisteredIdentities: %v. Skipping.", iterErr)
+			continue
+		}
+		var idInfo model.IdentityInfo
+		if err := json.Unmarshal(queryResponse.Value, &idInfo); err != nil {
+			idLogger.Warningf("Failed to unmarshal identity data for key '%s', value '%s': %v. Skipping.", queryResponse.Key, string(queryResponse.Value), err)
+			continue
+		}
+		identities = append(identities, idInfo)
+	}
+	idLogger.Infof("Admin '%s' retrieved %d registered identities.", callerFullID, len(identities))
+	return identities, nil // Will be [] if empty, not null
+}
+
+// AssignRoleUncheckedForTest is a test-only function to assign a role without admin checks.
+// THIS SHOULD NOT BE USED IN PRODUCTION. IT'S ADDED TO SUPPORT THE REFACTORED TestAssignRoleToSelf.
+func (im *IdentityManager) AssignRoleUncheckedForTest(targetIdentityOrAlias, role string) error {
+	idLogger.Warningf("TESTING FUNCTION AssignRoleUncheckedForTest called for role '%s' on '%s'. THIS IS NOT FOR PRODUCTION.", role, targetIdentityOrAlias)
+	roleLower := strings.ToLower(strings.TrimSpace(role))
+	if !ValidRoles[roleLower] { // Check against ValidRoles even for test
+		return fmt.Errorf("invalid role for test: '%s'. Valid roles are: %v", role, im.getListOfValidRoles())
+	}
+
+	targetFullID, err := im.ResolveIdentity(targetIdentityOrAlias)
+	if err != nil {
+		return fmt.Errorf("failed to resolve target identity '%s' for test role assignment: %w", targetIdentityOrAlias, err)
+	}
+
+	idInfo, err := im.getIdentityInfoByFullID(targetFullID)
+	if err != nil {
+		// If identity not found, we might need to create a basic one for testing this specific function
+		// However, for AssignRole, the identity should typically exist.
+		return fmt.Errorf("cannot assign role for test: target identity '%s' (FullID: %s) not found: %w", targetIdentityOrAlias, targetFullID, err)
+	}
+
+	for _, existingRole := range idInfo.Roles {
+		if existingRole == roleLower {
+			idLogger.Infof("TestAssignRoleUnchecked: Role '%s' already present for '%s'.", roleLower, targetFullID)
+			return nil // Already has role
+		}
+	}
+
+	now, err := im.getCurrentTxTimestamp()
+	if err != nil {
+		return fmt.Errorf("TestAssignRoleUnchecked: failed to get timestamp: %w", err)
+	}
+
+	idInfo.Roles = append(idInfo.Roles, roleLower)
+	idInfo.LastUpdatedAt = now
+
+	updatedBytes, err := json.Marshal(idInfo)
+	if err != nil {
+		return fmt.Errorf("TestAssignRoleUnchecked: failed to marshal IdentityInfo: %w", err)
+	}
+
+	identityKey, err := im.createIdentityCompositeKey(targetFullID)
+	if err != nil {
+		return fmt.Errorf("TestAssignRoleUnchecked: failed to create identity key: %w", err)
+	}
+
+	err = im.Ctx.GetStub().PutState(identityKey, updatedBytes)
+	if err == nil {
+		idLogger.Infof("TestAssignRoleUnchecked: Role '%s' successfully added to '%s'.", roleLower, targetFullID)
+	}
+	return err
+}
+package contract
+
+import (
+	"encoding/json"
+	"fmt"
+	"foodtrace/model"
+	"strings"
+	"time"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Lifecycle: Certifier Operations ---
+
+func (s *FoodtraceSmartContract) SubmitForCertification(ctx contractapi.TransactionContextInterface, shipmentID string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("SubmitForCertification: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	shipment, err := s.getShipmentByID(ctx, shipmentID)
+	if err != nil {
+		return fmt.Errorf("SubmitForCertification: %w", err)
+	}
+
+	isCallerAdmin, _ := im.IsCurrentUserAdmin()
+	if !isCallerAdmin && shipment.CurrentOwnerID != actor.fullID {
+		return fmt.Errorf("unauthorized: only current owner ('%s', alias '%s') or admin can submit shipment '%s' for certification", shipment.CurrentOwnerAlias, shipment.CurrentOwnerID, shipmentID)
+	}
+
+	if shipment.Status == model.StatusPendingCertification {
+		return fmt.Errorf("shipment '%s' is already pending certification", shipmentID)
+	}
+	if shipment.Status == model.StatusCertified || shipment.Status == model.StatusCertificationRejected {
+		return fmt.Errorf("shipment '%s' has already been through a certification decision (Status: %s). Further actions may require a different process.", shipmentID, shipment.Status)
+	}
+	if shipment.RecallInfo.IsRecalled {
+		return fmt.Errorf("recalled shipment '%s' cannot be submitted for certification", shipmentID)
+	}
+	if shipment.Status == model.StatusDistributed || shipment.Status == model.StatusDelivered || shipment.Status == model.StatusConsumed {
+		return fmt.Errorf("shipment '%s' is too far in the supply chain (Status: %s) to be submitted for certification", shipmentID, shipment.Status)
+	}
+	if shipment.Status != model.StatusCreated && shipment.Status != model.StatusProcessed {
+		logger.Warningf("Shipment '%s' is being submitted for certification from an unusual prior status: %s. Allowed.", shipmentID, shipment.Status)
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("SubmitForCertification: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment.Status = model.StatusPendingCertification
+	shipment.LastUpdatedAt = now
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	shipmentBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("SubmitForCertification: failed to marshal shipment '%s': %w", shipmentID, err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, shipmentBytes); err != nil {
+		return fmt.Errorf("SubmitForCertification: failed to update shipment '%s' status to PendingCertification: %w", shipmentID, err)
+	}
+
+	s.emitShipmentEvent(ctx, "ShipmentSubmittedForCertification", shipment, actor, nil)
+	logger.Infof("Shipment '%s' submitted for certification by '%s'", shipmentID, actor.alias)
+	return nil
+}
+
+func (s *FoodtraceSmartContract) RecordCertification(ctx contractapi.TransactionContextInterface,
+	shipmentID string, inspectionDateStr string, inspectionReportHash string,
+	certStatusStr string, comments string) error {
+
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("RecordCertification: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := im.RequireRole("certifier"); err != nil {
+		return err
+	}
+
+	logger.Infof("Certifier '%s' (alias: '%s') recording certification for shipment '%s'", actor.fullID, actor.alias, shipmentID)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	inspectionDate, err := parseDateString(inspectionDateStr, "inspectionDate", true)
+	if err != nil {
+		return err
+	}
+	if err := s.validateOptionalString(inspectionReportHash, "inspectionReportHash", maxStringInputLength); err != nil {
+		return err
+	}
+	if err := s.validateOptionalString(comments, "comments", maxDescriptionLength); err != nil {
+		return err
+	}
+
+	var certStatus model.CertificationStatus
+	switch strings.ToUpper(certStatusStr) {
+	case string(model.CertStatusApproved):
+		certStatus = model.CertStatusApproved
+	case string(model.CertStatusRejected):
+		certStatus = model.CertStatusRejected
+	case string(model.CertStatusPending):
+		certStatus = model.CertStatusPending
+	default:
+		return fmt.Errorf("invalid certStatusStr '%s'. Must be one of: %s, %s, %s", certStatusStr, model.CertStatusApproved, model.CertStatusRejected, model.CertStatusPending)
+	}
+
+	if (certStatus == model.CertStatusApproved || certStatus == model.CertStatusRejected) && strings.TrimSpace(inspectionReportHash) == "" {
+		logger.Warningf("Certifier '%s' is recording a final certification status ('%s') for shipment '%s' without providing an inspectionReportHash. This is allowed but not recommended.", actor.alias, certStatus, shipmentID)
+	}
+
+	shipment, err := s.getShipmentByID(ctx, shipmentID)
+	if err != nil {
+		return fmt.Errorf("RecordCertification: %w", err)
+	}
+
+	if (certStatus == model.CertStatusApproved || certStatus == model.CertStatusRejected) && shipment.Status != model.StatusPendingCertification {
+		isCallerAdmin, _ := im.IsCurrentUserAdmin()
+		if !isCallerAdmin {
+			return fmt.Errorf("shipment '%s' is not in '%s' status (current: '%s'). Cannot record final decision '%s'. Only admin can override.",
+				shipmentID, model.StatusPendingCertification, shipment.Status, certStatus)
+		}
+		logger.Warningf("Admin '%s' is overriding status check for recording certification on shipment '%s' (Current status: %s)", actor.alias, shipmentID, shipment.Status)
+	}
+	if shipment.RecallInfo.IsRecalled {
+		return fmt.Errorf("recalled shipment '%s' cannot have certification recorded", shipmentID)
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("RecordCertification: failed to get transaction timestamp: %w", err)
+	}
+
+	newCertificationRecord := model.CertificationRecord{
+		CertifierID: actor.fullID, CertifierAlias: actor.alias, InspectionDate: inspectionDate,
+		InspectionReportHash: inspectionReportHash, Status: certStatus, Comments: comments, CertifiedAt: now,
+	}
+	shipment.CertificationRecords = append(shipment.CertificationRecords, newCertificationRecord)
+
+	switch certStatus {
+	case model.CertStatusApproved:
+		shipment.Status = model.StatusCertified
+	case model.CertStatusRejected:
+		shipment.Status = model.StatusCertificationRejected
+	case model.CertStatusPending:
+		if shipment.Status != model.StatusPendingCertification {
+			shipment.Status = model.StatusPendingCertification
+		}
+	}
+	shipment.LastUpdatedAt = now
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	shipmentBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("RecordCertification: failed to marshal shipment '%s': %w", shipmentID, err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, shipmentBytes); err != nil {
+		return fmt.Errorf("RecordCertification: failed to update shipment '%s' on ledger: %w", shipmentID, err)
+	}
+
+	eventPayload := map[string]interface{}{
+		"certifierId": actor.fullID, "certifierAlias": actor.alias, "inspectionDate": inspectionDate.Format(time.RFC3339),
+		"certificationStatusRecord": certStatus, "overallShipmentStatus": shipment.Status, "comments": comments,
+	}
+	s.emitShipmentEvent(ctx, "ShipmentCertificationRecorded", shipment, actor, eventPayload)
+	logger.Infof("Certification recorded for shipment '%s' by certifier '%s'. New overall status: '%s'", shipmentID, actor.alias, shipment.Status)
+	return nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"foodtrace/model"
+	"strings"
+	"time"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Core Helper Methods (used across multiple operations) ---
+
+// getCurrentTxTimestamp retrieves the current transaction timestamp from the stub.
+func (s *FoodtraceSmartContract) getCurrentTxTimestamp(ctx contractapi.TransactionContextInterface) (time.Time, error) {
+	ts, err := ctx.GetStub().GetTxTimestamp()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to get transaction timestamp: %w", err)
+	}
+	return ts.AsTime(), nil
+}
+
+// FIXED: Improved getCurrentActorInfo to handle test scenarios better
+func (s *FoodtraceSmartContract) getCurrentActorInfo(ctx contractapi.TransactionContextInterface) (*actorInfo, error) {
+	im := NewIdentityManager(ctx)
+	fullID, err := im.GetCurrentIdentityFullID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current actor's FullID: %w", err)
+	}
+
+	var alias string
+	idInfo, errGetInfo := im.GetIdentityInfo(fullID)
+	if errGetInfo == nil && idInfo != nil {
+		alias = idInfo.ShortName
+	} else {
+		logger.Debugf("Could not retrieve IdentityInfo (or alias) for actor %s: %v. Attempting fallback.", fullID, errGetInfo)
+
+		// FIXED: Try to extract alias from X.509 CN if it follows our test pattern
+		if strings.Contains(fullID, "::CN=") {
+			parts := strings.Split(fullID, "::CN=")
+			if len(parts) > 1 {
+				cnPart := parts[1]
+				// Remove any additional suffixes
+				if idx := strings.Index(cnPart, "::"); idx != -1 {
+					cnPart = cnPart[:idx]
+				}
+				alias = cnPart
+				logger.Debugf("Extracted alias '%s' from fullID CN field", alias)
+			}
+		}
+
+		// Fallback to enrollment ID
+		if alias == "" {
+			enrollmentID, enrollErr := im.GetCurrentEnrollmentID()
+			if enrollErr == nil && enrollmentID != "" {
+				alias = enrollmentID
+			} else {
+				logger.Warningf("Failed to get EnrollmentID for %s (EnrollErr: %v, GetInfoErr: %v). Using placeholder alias.", fullID, enrollErr, errGetInfo)
+				// Truncate fullID for alias placeholder to avoid overly long alias
+				maxAliasLen := 16
+				if len(fullID) > maxAliasLen {
+					alias = "unknown_" + fullID[:maxAliasLen]
+				} else {
+					alias = "unknown_" + fullID
+				}
+			}
+		}
+	}
+
+	mspID, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current actor's MSPID: %w", err)
+	}
+	return &actorInfo{fullID: fullID, alias: alias, mspID: mspID}, nil
+}
+
+// createShipmentCompositeKey creates a composite key for a shipment.
+func (s *FoodtraceSmartContract) createShipmentCompositeKey(ctx contractapi.TransactionContextInterface, shipmentID string) (string, error) {
+	shipmentID = strings.TrimSpace(shipmentID)
+	if shipmentID == "" {
+		return "", errors.New("shipmentID cannot be empty")
+	}
+	return ctx.GetStub().CreateCompositeKey(shipmentObjectType, []string{shipmentID})
+}
+
+// --- Validation Helper Functions ---
+func (s *FoodtraceSmartContract) validateRequiredString(input, field string, max int) error {
+	if strings.TrimSpace(input) == "" {
+		return fmt.Errorf("%s cannot be empty", field)
+	}
+	if len(input) > max {
+		return fmt.Errorf("%s exceeds max length %d", field, max)
+	}
+	return nil
+}
+
+func (s *FoodtraceSmartContract) validateOptionalString(input, field string, max int) error {
+	if input != "" && len(input) > max {
+		return fmt.Errorf("%s exceeds max length %d", field, max)
+	}
+	return nil
+}
+
+func (s *FoodtraceSmartContract) validateStringArray(arr []string, field string, maxItems, maxItemLen int) error {
+	if arr == nil { // nil array is valid (empty)
+		return nil
+	}
+	if len(arr) > maxItems {
+		return fmt.Errorf("%s has %d items, exceeding maximum of %d", field, len(arr), maxItems)
+	}
+	for i, v := range arr {
+		// Treat items in array as optional strings unless specific validation is needed for emptiness
+		if err := s.validateOptionalString(v, fmt.Sprintf("%s[%d]", field, i), maxItemLen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseDateString(str, field string, required bool) (time.Time, error) {
+	sTrimmed := strings.TrimSpace(str)
+	if sTrimmed == "" {
+		if required {
+			return time.Time{}, fmt.Errorf("%s is a required date field and cannot be empty", field)
+		}
+		return time.Time{}, nil // Return zero time if optional and empty
+	}
+	t, err := time.Parse(time.RFC3339, sTrimmed)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid format for %s (expected RFC3339 'YYYY-MM-DDTHH:MM:SSZ'): %w", field, err)
+	}
+	return t, nil
+}
+
+// Specific data args validators
+type ValidatedFarmerData struct { // To return parsed dates
+	FarmerName                string `json:"farmerName"`
+	FarmLocation              string `json:"farmLocation"`
+	CropType                  string `json:"cropType"`
+	PlantingDate              time.Time
+	FertilizerUsed            string `json:"fertilizerUsed"`
+	CertificationDocumentHash string `json:"certificationDocumentHash"`
+	HarvestDate               time.Time
+	FarmingPractice           string `json:"farmingPractice"`
+	DestinationProcessorID    string `json:"destinationProcessorId"`
+}
+
+func (s *FoodtraceSmartContract) validateFarmerDataArgs(farmerDataJSON string) (*ValidatedFarmerData, error) {
+	var fdArg struct { // Temporary struct for unmarshalling string dates
+		FarmerName                string `json:"farmerName"`
+		FarmLocation              string `json:"farmLocation"`
+		CropType                  string `json:"cropType"`
+		PlantingDateStr           string `json:"plantingDate"`
+		FertilizerUsed            string `json:"fertilizerUsed"`
+		CertificationDocumentHash string `json:"certificationDocumentHash"`
+		HarvestDateStr            string `json:"harvestDate"`
+		FarmingPractice           string `json:"farmingPractice"`
+		DestinationProcessorID    string `json:"destinationProcessorId"`
+	}
+	if err := json.Unmarshal([]byte(farmerDataJSON), &fdArg); err != nil {
+		return nil, fmt.Errorf("invalid farmerDataJSON: %w. Ensure the JSON structure and all required fields are correct", err)
+	}
+
+	if err := s.validateRequiredString(fdArg.FarmerName, "farmerData.farmerName", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(fdArg.FarmLocation, "farmerData.farmLocation", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(fdArg.CropType, "farmerData.cropType", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	plantingDate, err := parseDateString(fdArg.PlantingDateStr, "farmerData.plantingDate", true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(fdArg.FertilizerUsed, "farmerData.fertilizerUsed", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(fdArg.CertificationDocumentHash, "farmerData.certificationDocumentHash", maxStringInputLength); err != nil {
+		return nil, err
+	} // Hash can be long
+	harvestDate, err := parseDateString(fdArg.HarvestDateStr, "farmerData.harvestDate", true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(fdArg.FarmingPractice, "farmerData.farmingPractice", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(fdArg.DestinationProcessorID, "farmerData.destinationProcessorId", maxStringInputLength*2); err != nil {
+		return nil, err
+	} // Full IDs can be long
+
+	return &ValidatedFarmerData{
+		FarmerName: fdArg.FarmerName, FarmLocation: fdArg.FarmLocation, CropType: fdArg.CropType, PlantingDate: plantingDate,
+		FertilizerUsed: fdArg.FertilizerUsed, CertificationDocumentHash: fdArg.CertificationDocumentHash, HarvestDate: harvestDate,
+		FarmingPractice: fdArg.FarmingPractice, DestinationProcessorID: fdArg.DestinationProcessorID,
+	}, nil
+}
+
+func (s *FoodtraceSmartContract) validateProcessorDataArgs(pdJSON string) (*model.ProcessorData, error) {
+	var pdArgRaw struct { // Use raw struct for unmarshalling string dates
+		DateProcessedStr         string   `json:"dateProcessed"`
+		ProcessingType           string   `json:"processingType"`
+		ProcessingLineID         string   `json:"processingLineId"`
+		ProcessingLocation       string   `json:"processingLocation"`
+		ContaminationCheck       string   `json:"contaminationCheck"`
+		OutputBatchID            string   `json:"outputBatchId"`
+		ExpiryDateStr            string   `json:"expiryDate"`
+		QualityCertifications    []string `json:"qualityCertifications"`
+		DestinationDistributorID string   `json:"destinationDistributorId"`
+	}
+	if err := json.Unmarshal([]byte(pdJSON), &pdArgRaw); err != nil {
+		return nil, fmt.Errorf("invalid processorDataJSON: %w", err)
+	}
+
+	dateProcessed, err := parseDateString(pdArgRaw.DateProcessedStr, "processorData.dateProcessed", true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(pdArgRaw.ProcessingType, "processorData.processingType", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(pdArgRaw.ProcessingLineID, "processorData.processingLineId", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(pdArgRaw.ProcessingLocation, "processorData.processingLocation", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(pdArgRaw.ContaminationCheck, "processorData.contaminationCheck", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(pdArgRaw.OutputBatchID, "processorData.outputBatchId", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	expiryDate, err := parseDateString(pdArgRaw.ExpiryDateStr, "processorData.expiryDate", false)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.validateStringArray(pdArgRaw.QualityCertifications, "processorData.qualityCertifications", maxArrayElements, maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(pdArgRaw.DestinationDistributorID, "processorData.destinationDistributorId", maxStringInputLength*2); err != nil {
+		return nil, err
+	}
+
+	return &model.ProcessorData{ // Return model.ProcessorData with parsed dates
+		DateProcessed: dateProcessed, ProcessingType: pdArgRaw.ProcessingType, ProcessingLineID: pdArgRaw.ProcessingLineID,
+		ProcessingLocation: pdArgRaw.ProcessingLocation, ContaminationCheck: pdArgRaw.ContaminationCheck, OutputBatchID: pdArgRaw.OutputBatchID,
+		ExpiryDate: expiryDate, QualityCertifications: pdArgRaw.QualityCertifications, DestinationDistributorID: pdArgRaw.DestinationDistributorID,
+	}, nil
+}
+
+// FIXED: Complete validation for distributor data
+func (s *FoodtraceSmartContract) validateDistributorDataArgs(ddJSON string) (*model.DistributorData, error) {
+	var ddArgRaw struct {
+		PickupDateTimeStr     string   `json:"pickupDateTime"`
+		DeliveryDateTimeStr   string   `json:"deliveryDateTime"`
+		DistributionLineID    string   `json:"distributionLineId"`
+		TemperatureRange      string   `json:"temperatureRange"`
+		StorageTemperature    *float64 `json:"storageTemperature"`
+		TransitLocationLog    []string `json:"transitLocationLog"`
+		TransportConditions   string   `json:"transportConditions"`
+		DistributionCenter    string   `json:"distributionCenter"`
+		DestinationRetailerID string   `json:"destinationRetailerId"`
+	}
+	if err := json.Unmarshal([]byte(ddJSON), &ddArgRaw); err != nil {
+		return nil, fmt.Errorf("invalid distributorDataJSON: %w", err)
+	}
+
+	pickupDateTime, err := parseDateString(ddArgRaw.PickupDateTimeStr, "distributorData.pickupDateTime", true)
+	if err != nil {
+		return nil, err
+	}
+	deliveryDateTime, err := parseDateString(ddArgRaw.DeliveryDateTimeStr, "distributorData.deliveryDateTime", false)
+	if err != nil {
+		return nil, err
+	}
+
+	// FIXED: Complete all validation calls
+	if err := s.validateRequiredString(ddArgRaw.DistributionLineID, "distributorData.distributionLineId", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(ddArgRaw.TemperatureRange, "distributorData.temperatureRange", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateStringArray(ddArgRaw.TransitLocationLog, "distributorData.transitLocationLog", maxArrayElements, maxDescriptionLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(ddArgRaw.TransportConditions, "distributorData.transportConditions", maxDescriptionLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(ddArgRaw.DistributionCenter, "distributorData.distributionCenter", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(ddArgRaw.DestinationRetailerID, "distributorData.destinationRetailerId", maxStringInputLength*2); err != nil {
+		return nil, err
+	}
+
+	var storageTempValue float64
+	if ddArgRaw.StorageTemperature != nil {
+		storageTempValue = *ddArgRaw.StorageTemperature
+	}
+
+	return &model.DistributorData{
+		PickupDateTime: pickupDateTime, DeliveryDateTime: deliveryDateTime, DistributionLineID: ddArgRaw.DistributionLineID,
+		TemperatureRange: ddArgRaw.TemperatureRange, StorageTemperature: storageTempValue, TransitLocationLog: ddArgRaw.TransitLocationLog,
+		TransportConditions: ddArgRaw.TransportConditions, DistributionCenter: ddArgRaw.DistributionCenter, DestinationRetailerID: ddArgRaw.DestinationRetailerID,
+	}, nil
+}
+
+// FIXED: Complete validation for retailer data
+func (s *FoodtraceSmartContract) validateRetailerDataArgs(rdJSON string) (*model.RetailerData, error) {
+	var rdArgRaw struct {
+		DateReceivedStr       string   `json:"dateReceived"`
+		RetailerLineID        string   `json:"retailerLineId"`
+		ProductNameRetail     string   `json:"productNameRetail"`
+		ShelfLife             string   `json:"shelfLife"`
+		SellByDateStr         string   `json:"sellByDate"`
+		RetailerExpiryDateStr string   `json:"retailerExpiryDate"`
+		StoreID               string   `json:"storeId"`
+		StoreLocation         string   `json:"storeLocation"`
+		Price                 *float64 `json:"price"`
+		QRCodeLink            string   `json:"qrCodeLink"`
+	}
+	if err := json.Unmarshal([]byte(rdJSON), &rdArgRaw); err != nil {
+		return nil, fmt.Errorf("invalid retailerDataJSON: %w", err)
+	}
+
+	dateReceived, err := parseDateString(rdArgRaw.DateReceivedStr, "retailerData.dateReceived", true)
+	if err != nil {
+		return nil, err
+	}
+	sellByDate, err := parseDateString(rdArgRaw.SellByDateStr, "retailerData.sellByDate", false)
+	if err != nil {
+		return nil, err
+	}
+	retailerExpiryDate, err := parseDateString(rdArgRaw.RetailerExpiryDateStr, "retailerData.retailerExpiryDate", false)
+	if err != nil {
+		return nil, err
+	}
+
+	// FIXED: Complete all validation calls
+	if err := s.validateRequiredString(rdArgRaw.RetailerLineID, "retailerData.retailerLineId", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(rdArgRaw.ProductNameRetail, "retailerData.productNameRetail", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(rdArgRaw.ShelfLife, "retailerData.shelfLife", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(rdArgRaw.StoreID, "retailerData.storeId", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateRequiredString(rdArgRaw.StoreLocation, "retailerData.storeLocation", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if err := s.validateOptionalString(rdArgRaw.QRCodeLink, "retailerData.qrCodeLink", maxStringInputLength*2); err != nil {
+		return nil, err
+	}
+
+	var priceValue float64
+	if rdArgRaw.Price != nil {
+		priceValue = *rdArgRaw.Price
+		if priceValue < 0 {
+			return nil, errors.New("retailerData.price cannot be negative")
+		}
+	}
+
+	return &model.RetailerData{
+		DateReceived: dateReceived, RetailerLineID: rdArgRaw.RetailerLineID, ProductNameRetail: rdArgRaw.ProductNameRetail,
+		ShelfLife: rdArgRaw.ShelfLife, SellByDate: sellByDate, RetailerExpiryDate: retailerExpiryDate,
+		StoreID: rdArgRaw.StoreID, StoreLocation: rdArgRaw.StoreLocation, Price: priceValue, QRCodeLink: rdArgRaw.QRCodeLink,
+	}, nil
+}
+
+// --- Other General Helper Methods ---
+
+// Enhanced ensureShipmentSchemaCompliance in shipment_helpers.go
+func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
+	if shipment == nil {
+		return
+	}
+
+	// FIXED: Initialize top-level slices as empty, not nil
+	if shipment.InputShipmentIDs == nil {
+		shipment.InputShipmentIDs = []string{}
+	}
+	if shipment.CertificationRecords == nil {
+		shipment.CertificationRecords = []model.CertificationRecord{}
+	}
+	if shipment.History == nil {
+		shipment.History = []model.HistoryEntry{}
+	}
+
+	// Initialize FarmerData if nil and ensure it has no nil slices
+	if shipment.FarmerData == nil {
+		shipment.FarmerData = &model.FarmerData{}
+	}
+
+	// Initialize ProcessorData if nil and ensure nested slices are not nil
+	if shipment.ProcessorData == nil {
+		shipment.ProcessorData = &model.ProcessorData{
+			QualityCertifications: []string{}, // FIXED: Initialize as empty slice
+		}
+	} else {
+		// Ensure nested slice is not nil
+		if shipment.ProcessorData.QualityCertifications == nil {
+			shipment.ProcessorData.QualityCertifications = []string{}
+		}
+	}
+
+	// Initialize DistributorData if nil and ensure nested slices are not nil
+	if shipment.DistributorData == nil {
+		shipment.DistributorData = &model.DistributorData{
+			TransitLocationLog: []string{}, // FIXED: Initialize as empty slice
+		}
+	} else {
+		// Ensure nested slice is not nil
+		if shipment.DistributorData.TransitLocationLog == nil {
+			shipment.DistributorData.TransitLocationLog = []string{}
+		}
+	}
+
+	// Initialize RetailerData if nil
+	if shipment.RetailerData == nil {
+		shipment.RetailerData = &model.RetailerData{}
+	}
+
+	// Initialize RecallInfo if nil and ensure nested slices are not nil
+	if shipment.RecallInfo == nil {
+		shipment.RecallInfo = &model.RecallInfo{
+			IsRecalled:        false,
+			LinkedShipmentIDs: []string{}, // FIXED: Initialize as empty slice
+		}
+	} else {
+		// Ensure nested slice is not nil
+		if shipment.RecallInfo.LinkedShipmentIDs == nil {
+			shipment.RecallInfo.LinkedShipmentIDs = []string{}
+		}
+	}
+}
+
+// Alternative helper function to ensure any model.IdentityInfo has proper slice initialization
+func ensureIdentityInfoSchemaCompliance(idInfo *model.IdentityInfo) {
+	if idInfo == nil {
+		return
+	}
+
+	// FIXED: Initialize Roles slice as empty, not nil
+	if idInfo.Roles == nil {
+		idInfo.Roles = []string{}
+	}
+}
+
+// getShipmentAndVerifyStage fetches a shipment and verifies its status and designee.
+func (s *FoodtraceSmartContract) getShipmentAndVerifyStage(ctx contractapi.TransactionContextInterface, shipmentID string, expectedStatus model.ShipmentStatus, actorFullID string) (*model.Shipment, error) {
+	shipment, err := s.getShipmentByID(ctx, shipmentID) // Uses query_ops internal helper
+	if err != nil {
+		return nil, err
+	}
+
+	if shipment.RecallInfo != nil && shipment.RecallInfo.IsRecalled && expectedStatus != model.StatusRecalled {
+		return nil, fmt.Errorf("shipment '%s' is recalled – no further processing", shipmentID)
+	}
+	if shipment.Status != expectedStatus {
+		return nil, fmt.Errorf("shipment '%s' status '%s', expected '%s'", shipmentID, shipment.Status, expectedStatus)
+	}
+
+	var designated string
+	switch expectedStatus {
+	case model.StatusCreated: // Farmer designates Processor
+		if shipment.FarmerData == nil {
+			return nil, errors.New("missing FarmerData – cannot verify processor destination")
+		}
+		designated = shipment.FarmerData.DestinationProcessorID
+	case model.StatusProcessed: // Processor designates Distributor
+		if shipment.ProcessorData == nil {
+			return nil, errors.New("missing ProcessorData – cannot verify distributor destination")
+		}
+		designated = shipment.ProcessorData.DestinationDistributorID
+	case model.StatusDistributed: // Distributor designates Retailer
+		if shipment.DistributorData == nil {
+			return nil, errors.New("missing DistributorData – cannot verify retailer destination")
+		}
+		designated = shipment.DistributorData.DestinationRetailerID
+	default:
+		return shipment, nil // No designated-recipient check for other states
+	}
+
+	if strings.TrimSpace(designated) == "" {
+		return nil, fmt.Errorf("shipment '%s' does not declare a designated recipient for this stage", shipmentID)
+	}
+	im := NewIdentityManager(ctx) // Needed for resolution if `actorFullID` is an alias
+	resolvedDesignated, err := im.ResolveIdentity(designated)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve designated recipient '%s' for shipment '%s': %w", designated, shipmentID, err)
+	}
+	resolvedActorFullID, err := im.ResolveIdentity(actorFullID) // Ensure actorFullID is also resolved
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve current actor '%s': %w", actorFullID, err)
+	}
+
+	if resolvedDesignated != resolvedActorFullID {
+		// For logging, try to get aliases for better messages
+		designatedAlias := designated
+		actorAlias := actorFullID
+		desigInfo, _ := im.GetIdentityInfo(resolvedDesignated)
+		if desigInfo != nil {
+			designatedAlias = desigInfo.ShortName
+		}
+		actorInfoFromIM, _ := im.GetIdentityInfo(resolvedActorFullID)
+		if actorInfoFromIM != nil {
+			actorAlias = actorInfoFromIM.ShortName
+		}
+
+		return nil, fmt.Errorf("unauthorized – caller '%s' (resolved: %s) is not the designated recipient '%s' (resolved: %s) for shipment '%s'",
+			actorAlias, resolvedActorFullID, designatedAlias, resolvedDesignated, shipmentID)
+	}
+	return shipment, nil
+}
+
+// enrichShipmentAliases populates alias fields in the shipment data if they are empty.
+func (s *FoodtraceSmartContract) enrichShipmentAliases(im *IdentityManager, shipment *model.Shipment) {
+	if shipment == nil {
+		return
+	}
+
+	enrich := func(id, currentAlias string) string {
+		if currentAlias == "" && id != "" {
+			if info, err := im.GetIdentityInfo(id); err == nil && info != nil {
+				return info.ShortName
+			}
+		}
+		return currentAlias
+	}
+
+	shipment.CurrentOwnerAlias = enrich(shipment.CurrentOwnerID, shipment.CurrentOwnerAlias)
+	if shipment.FarmerData != nil {
+		shipment.FarmerData.FarmerAlias = enrich(shipment.FarmerData.FarmerID, shipment.FarmerData.FarmerAlias)
+	}
+	if shipment.ProcessorData != nil {
+		shipment.ProcessorData.ProcessorAlias = enrich(shipment.ProcessorData.ProcessorID, shipment.ProcessorData.ProcessorAlias)
+	}
+	if shipment.DistributorData != nil {
+		shipment.DistributorData.DistributorAlias = enrich(shipment.DistributorData.DistributorID, shipment.DistributorData.DistributorAlias)
+	}
+	if shipment.RetailerData != nil {
+		shipment.RetailerData.RetailerAlias = enrich(shipment.RetailerData.RetailerID, shipment.RetailerData.RetailerAlias)
+	}
+	if shipment.RecallInfo != nil {
+		shipment.RecallInfo.RecalledByAlias = enrich(shipment.RecallInfo.RecalledBy, shipment.RecallInfo.RecalledByAlias)
+	}
+	if shipment.CertificationRecords != nil {
+		for i := range shipment.CertificationRecords {
+			shipment.CertificationRecords[i].CertifierAlias = enrich(shipment.CertificationRecords[i].CertifierID, shipment.CertificationRecords[i].CertifierAlias)
+		}
+	}
+}
+
+// emitShipmentEvent sends a chaincode event.
+func (s *FoodtraceSmartContract) emitShipmentEvent(ctx contractapi.TransactionContextInterface, eventName string, shipment *model.Shipment, actor *actorInfo, additionalPayload map[string]interface{}) {
+	if shipment == nil || actor == nil {
+		logger.Errorf("emitShipmentEvent: cannot emit event, shipment or actor is nil. Event: %s", eventName)
+		return
+	}
+	payload := map[string]interface{}{
+		"shipmentId":           shipment.ID,
+		"productName":          shipment.ProductName,
+		"status":               shipment.Status,
+		"currentOwnerId":       shipment.CurrentOwnerID,
+		"currentOwnerAlias":    shipment.CurrentOwnerAlias,
+		"actorFullId":          actor.fullID,
+		"actorAlias":           actor.alias,
+		"transactionTimestamp": shipment.LastUpdatedAt.Format(time.RFC3339), // Use LastUpdatedAt as event time
+	}
+	if additionalPayload != nil {
+		for k, v := range additionalPayload {
+			if t, ok := v.(time.Time); ok {
+				payload[k] = t.Format(time.RFC3339)
+			} else {
+				payload[k] = v
+			}
+		}
+	}
+	eventBytes, err := json.Marshal(payload)
+	if err != nil {
+		logger.Warningf("emitShipmentEvent: Failed to marshal event payload for event '%s' on shipment '%s': %v", eventName, shipment.ID, err)
+		return
+	}
+	if errSet := ctx.GetStub().SetEvent(eventName, eventBytes); errSet != nil {
+		logger.Warningf("emitShipmentEvent: Failed to set event '%s' for shipment '%s': %v", eventName, shipment.ID, errSet)
+	}
+}
+
+// AbsDuration returns the absolute value of a time.Duration.
+func AbsDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
+// min is a simple helper for int.
+func min(a, b int) int {
+	if b < a {
+		return b
+	}
+	return a
+}
+
+// requireAdmin is a helper to check if the current caller is an admin.
+func (s *FoodtraceSmartContract) requireAdmin(ctx contractapi.TransactionContextInterface, im *IdentityManager) error {
+	isCallerAdmin, err := im.IsCurrentUserAdmin()
+	if err != nil {
+		return fmt.Errorf("failed to check admin status: %w", err)
+	}
+	if !isCallerAdmin {
+		callerID, _ := im.GetCurrentIdentityFullID() // Best effort to get ID for logging
+		return fmt.Errorf("unauthorized: caller '%s' is not an admin", callerID)
+	}
+	return nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"foodtrace/model"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Lifecycle: Recall Operations ---
+
+func (s *FoodtraceSmartContract) InitiateRecall(ctx contractapi.TransactionContextInterface, shipmentID, recallID, reason string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("InitiateRecall: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	if err := s.validateRequiredString(recallID, "recallID", maxStringInputLength); err != nil {
+		return err
+	}
+	if err := s.validateRequiredString(reason, "reason", maxRecallReasonLength); err != nil {
+		return err
+	}
+
+	shipment, err := s.getShipmentByID(ctx, shipmentID)
+	if err != nil {
+		return fmt.Errorf("InitiateRecall: %w", err)
+	}
+
+	isCallerAdmin, _ := im.IsCurrentUserAdmin()
+	if !isCallerAdmin && shipment.CurrentOwnerID != actor.fullID {
+		ownerInfo, _ := im.GetIdentityInfo(shipment.CurrentOwnerID)
+		ownerAlias := shipment.CurrentOwnerID
+		if ownerInfo != nil {
+			ownerAlias = ownerInfo.ShortName
+		}
+		return fmt.Errorf("unauthorized: only admin or current owner ('%s', alias '%s') can initiate recall for shipment '%s'", shipment.CurrentOwnerID, ownerAlias, shipmentID)
+	}
+
+	if shipment.RecallInfo.IsRecalled {
+		if shipment.RecallInfo.RecallID == recallID {
+			return fmt.Errorf("shipment '%s' is already part of this specific recall event '%s'", shipmentID, recallID)
+		}
+		logger.Warningf("Shipment '%s' was already recalled under recallID '%s'. This action will register an additional recall event '%s' or update details if applicable.", shipmentID, shipment.RecallInfo.RecallID, recallID)
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("InitiateRecall: failed to get transaction timestamp: %w", err)
+	}
+
+	shipment.RecallInfo.IsRecalled = true
+	shipment.RecallInfo.RecallID = recallID
+	shipment.RecallInfo.RecallReason = reason
+	shipment.RecallInfo.RecallDate = now
+	shipment.RecallInfo.RecalledBy = actor.fullID
+	shipment.RecallInfo.RecalledByAlias = actor.alias
+
+	shipment.Status = model.StatusRecalled
+	shipment.LastUpdatedAt = now
+	ensureShipmentSchemaCompliance(shipment) // Ensure sub-fields are initialized
+
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	updatedBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("InitiateRecall: failed to marshal recalled shipment '%s': %w", shipmentID, err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, updatedBytes); err != nil {
+		return fmt.Errorf("InitiateRecall: failed to save recalled shipment '%s' to ledger: %w", shipmentID, err)
+	}
+
+	s.emitShipmentEvent(ctx, "ShipmentRecalled", shipment, actor, map[string]interface{}{"recallId": recallID, "reason": reason})
+	logger.Infof("Shipment '%s' recalled by '%s' (RecallID: %s)", shipmentID, actor.alias, recallID)
+	return nil
+}
+
+func (s *FoodtraceSmartContract) AddLinkedShipmentsToRecall(ctx contractapi.TransactionContextInterface, primaryRecallID, primaryShipmentID string, linkedShipmentIDsJSON string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("AddLinkedShipmentsToRecall: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+
+	if err := s.validateRequiredString(primaryRecallID, "primaryRecallID", maxStringInputLength); err != nil {
+		return err
+	}
+	if err := s.validateRequiredString(primaryShipmentID, "primaryShipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+
+	pShipment, err := s.getShipmentByID(ctx, primaryShipmentID)
+	if err != nil {
+		return fmt.Errorf("AddLinkedShipmentsToRecall: primary shipment '%s' not found: %w", primaryShipmentID, err)
+	}
+
+	if !pShipment.RecallInfo.IsRecalled || pShipment.RecallInfo.RecallID != primaryRecallID {
+		return fmt.Errorf("primary shipment '%s' is not part of recall event '%s' or its RecallID does not match", primaryShipmentID, primaryRecallID)
+	}
+
+	isCallerAdmin, _ := im.IsCurrentUserAdmin()
+	if !isCallerAdmin && pShipment.RecallInfo.RecalledBy != actor.fullID {
+		return errors.New("unauthorized: only admin or the original initiator of the primary shipment's recall can link other shipments")
+	}
+
+	var linkedShipmentIDs []string
+	if err := json.Unmarshal([]byte(linkedShipmentIDsJSON), &linkedShipmentIDs); err != nil {
+		return fmt.Errorf("invalid linkedShipmentIDsJSON: %w", err)
+	}
+	if len(linkedShipmentIDs) == 0 {
+		logger.Info("AddLinkedShipmentsToRecall: No linked shipment IDs provided to add.")
+		return nil
+	}
+	if len(linkedShipmentIDs) > maxArrayElements {
+		return fmt.Errorf("number of linked shipment IDs (%d) exceeds maximum of %d", len(linkedShipmentIDs), maxArrayElements)
+	}
+
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err != nil {
+		return fmt.Errorf("AddLinkedShipmentsToRecall: failed to get transaction timestamp: %w", err)
+	}
+
+	newlyLinkedCount := 0
+	var actualNewlyLinkedIDsForPrimary []string
+
+	for _, linkedID := range linkedShipmentIDs {
+		if errVal := s.validateRequiredString(linkedID, "linkedShipmentID in array", maxStringInputLength); errVal != nil {
+			logger.Warningf("AddLinkedShipmentsToRecall: Invalid linked shipment ID format '%s': %v. Skipping.", linkedID, errVal)
+			continue
+		}
+		if linkedID == primaryShipmentID {
+			logger.Infof("AddLinkedShipmentsToRecall: Cannot link primary shipment '%s' to itself. Skipping.", linkedID)
+			continue
+		}
+
+		lShip, errGet := s.getShipmentByID(ctx, linkedID)
+		if errGet != nil {
+			logger.Warningf("AddLinkedShipmentsToRecall: Skipping linked shipment '%s': not found or error (%v)", linkedID, errGet)
+			continue
+		}
+
+		if lShip.RecallInfo.IsRecalled && lShip.RecallInfo.RecallID == primaryRecallID {
+			logger.Infof("AddLinkedShipmentsToRecall: Linked shipment '%s' already part of recall '%s'. Skipping.", linkedID, primaryRecallID)
+			continue
+		}
+		if lShip.RecallInfo.IsRecalled && lShip.RecallInfo.RecallID != primaryRecallID {
+			logger.Warningf("AddLinkedShipmentsToRecall: Linked shipment '%s' is already part of a different recall ('%s'). It will now also be linked to recall '%s'.", linkedID, lShip.RecallInfo.RecallID, primaryRecallID)
+		}
+
+		lShip.RecallInfo.IsRecalled = true
+		lShip.RecallInfo.RecallID = primaryRecallID
+		lShip.RecallInfo.RecallReason = pShipment.RecallInfo.RecallReason
+		lShip.RecallInfo.RecallDate = now
+		lShip.RecallInfo.RecalledBy = actor.fullID
+		lShip.RecallInfo.RecalledByAlias = actor.alias
+		lShip.Status = model.StatusRecalled
+		lShip.LastUpdatedAt = now
+		ensureShipmentSchemaCompliance(lShip) // Ensure sub-fields are initialized
+
+		lShipKey, keyErr := s.createShipmentCompositeKey(ctx, linkedID)
+		if keyErr != nil {
+			logger.Warningf("AddLinkedShipmentsToRecall: Failed to create key for linked shipment '%s': %v. Skipping.", linkedID, keyErr)
+			continue
+		}
+		lShipBytes, marshErr := json.Marshal(lShip)
+		if marshErr != nil {
+			logger.Warningf("AddLinkedShipmentsToRecall: Failed to marshal linked shipment '%s': %v. Skipping.", linkedID, marshErr)
+			continue
+		}
+		if errPut := ctx.GetStub().PutState(lShipKey, lShipBytes); errPut != nil {
+			logger.Warningf("AddLinkedShipmentsToRecall: Failed to save recalled linked shipment '%s': %v. Skipping.", linkedID, errPut)
+			continue
+		}
+		s.emitShipmentEvent(ctx, "ShipmentRecalled", lShip, actor, map[string]interface{}{
+			"recallId": primaryRecallID, "reason": lShip.RecallInfo.RecallReason,
+			"linkedToPrimaryShipment": primaryShipmentID, "linkOperationBy": actor.fullID,
+		})
+		actualNewlyLinkedIDsForPrimary = append(actualNewlyLinkedIDsForPrimary, linkedID)
+		newlyLinkedCount++
+		logger.Infof("AddLinkedShipmentsToRecall: Linked shipment '%s' marked as recalled under event '%s'", linkedID, primaryRecallID)
+	}
+
+	if newlyLinkedCount > 0 {
+		currentLinksOnPrimary := make(map[string]bool)
+		for _, id := range pShipment.RecallInfo.LinkedShipmentIDs {
+			currentLinksOnPrimary[id] = true
+		}
+
+		addedToPrimaryList := false
+		for _, newLinkID := range actualNewlyLinkedIDsForPrimary {
+			if !currentLinksOnPrimary[newLinkID] {
+				pShipment.RecallInfo.LinkedShipmentIDs = append(pShipment.RecallInfo.LinkedShipmentIDs, newLinkID)
+				addedToPrimaryList = true
+			}
+		}
+
+		if addedToPrimaryList {
+			pShipment.LastUpdatedAt = now
+			pShipKey, _ := s.createShipmentCompositeKey(ctx, primaryShipmentID)
+			pShipBytes, marshErr := json.Marshal(pShipment)
+			if marshErr != nil {
+				logger.Errorf("CRITICAL: AddLinkedShipmentsToRecall: Failed to marshal primary shipment '%s' after updating its linked IDs list: %v.", primaryShipmentID, marshErr)
+			} else {
+				if errPut := ctx.GetStub().PutState(pShipKey, pShipBytes); errPut != nil {
+					logger.Errorf("CRITICAL: AddLinkedShipmentsToRecall: Failed to save primary shipment '%s' after updating its linked IDs list: %v.", primaryShipmentID, errPut)
+				}
+			}
+		}
+	}
+	logger.Infof("AddLinkedShipmentsToRecall: Processed %d IDs; successfully linked %d new unique shipments to recall event '%s' for primary shipment '%s'", len(linkedShipmentIDs), newlyLinkedCount, primaryRecallID, primaryShipmentID)
+	return nil
+}
+package contract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"foodtrace/model"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/hyperledger/fabric-chaincode-go/shim"
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+// --- Query Functions ---
+
+// getShipmentByID is an internal helper to retrieve and unmarshal a shipment.
+// It also ensures schema compliance.
+func (s *FoodtraceSmartContract) getShipmentByID(ctx contractapi.TransactionContextInterface, shipmentID string) (*model.Shipment, error) {
+	if strings.TrimSpace(shipmentID) == "" {
+		return nil, errors.New("getShipmentByID: shipmentID cannot be empty")
+	}
+	shipmentKey, err := s.createShipmentCompositeKey(ctx, shipmentID)
+	if err != nil {
+		return nil, fmt.Errorf("getShipmentByID: failed to create key for shipment '%s': %w", shipmentID, err)
+	}
+
+	shipmentBytes, err := ctx.GetStub().GetState(shipmentKey)
+	if err != nil {
+		return nil, fmt.Errorf("getShipmentByID: failed to read shipment '%s' from ledger: %w", shipmentID, err)
+	}
+	if shipmentBytes == nil {
+		return nil, fmt.Errorf("shipment with ID '%s' does not exist", shipmentID)
+	}
+
+	var shipment model.Shipment
+	if err = json.Unmarshal(shipmentBytes, &shipment); err != nil {
+		return nil, fmt.Errorf("getShipmentByID: failed to unmarshal shipment '%s' data: %w", shipmentID, err)
+	}
+
+	ensureShipmentSchemaCompliance(&shipment) // Ensure all sub-structs are initialized
+	return &shipment, nil
+}
+
+// Fix for GetShipmentPublicDetails in shipment_query_ops.go
+func (s *FoodtraceSmartContract) GetShipmentPublicDetails(ctx contractapi.TransactionContextInterface, shipmentID string) (*model.Shipment, error) {
+	logger.Debugf("GetShipmentPublicDetails: Querying details for shipment '%s'", shipmentID)
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return nil, err
+	}
+
+	im := NewIdentityManager(ctx)
+	shipment, err := s.getShipmentByID(ctx, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+
+	s.enrichShipmentAliases(im, shipment)
+
+	shipmentKey, keyErr := s.createShipmentCompositeKey(ctx, shipmentID)
+	if keyErr != nil {
+		logger.Warningf("GetShipmentPublicDetails: Failed to create shipment key for history query on shipment '%s': %v. Details returned without history.", shipmentID, keyErr)
+		// FIXED: Initialize empty history if can't get history
+		shipment.History = []model.HistoryEntry{}
+	} else {
+		historyIter, errHist := ctx.GetStub().GetHistoryForKey(shipmentKey)
+		if errHist != nil {
+			logger.Warningf("GetShipmentPublicDetails: Failed to get history for shipment '%s': %v. Details returned without history.", shipmentID, errHist)
+			// FIXED: Initialize empty history if can't get history
+			shipment.History = []model.HistoryEntry{}
+		} else {
+			defer historyIter.Close()
+			// FIXED: Initialize as empty slice, not nil
+			historyEntries := []model.HistoryEntry{}
+
+			for historyIter.HasNext() {
+				historyItem, iterErr := historyIter.Next()
+				if iterErr != nil {
+					logger.Warningf("GetShipmentPublicDetails: Error iterating shipment history for '%s': %v. Skipping entry.", shipmentID, iterErr)
+					continue
+				}
+				var pastShipmentState model.Shipment
+				_ = json.Unmarshal(historyItem.Value, &pastShipmentState)
+
+				actorIDForHistory := pastShipmentState.CurrentOwnerID
+				actorAliasForHistory := pastShipmentState.CurrentOwnerAlias
+
+				if actorAliasForHistory == "" && actorIDForHistory != "" {
+					actorInfo, _ := im.GetIdentityInfo(actorIDForHistory)
+					if actorInfo != nil {
+						actorAliasForHistory = actorInfo.ShortName
+					}
+				}
+				action := string(pastShipmentState.Status)
+				if historyItem.IsDelete {
+					action = "DELETED"
+				}
+
+				entry := model.HistoryEntry{
+					TxID:       historyItem.TxId,
+					Timestamp:  historyItem.Timestamp.AsTime(),
+					IsDelete:   historyItem.IsDelete,
+					Value:      string(historyItem.Value),
+					ActorID:    actorIDForHistory,
+					ActorAlias: actorAliasForHistory,
+					Action:     action,
+				}
+				historyEntries = append(historyEntries, entry)
+			}
+			shipment.History = historyEntries // Will be [] if no history, not null
+		}
+	}
+	return shipment, nil
+}
+
+// Fix for GetMyShipments in shipment_query_ops.go
+func (s *FoodtraceSmartContract) GetMyShipments(ctx contractapi.TransactionContextInterface, pageSizeStr string, bookmark string) (*model.PaginatedShipmentResponse, error) {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetMyShipments: failed to get actor info: %w", err)
+	}
+
+	pageSize, err := strconv.ParseInt(pageSizeStr, 10, 32)
+	if err != nil || pageSize <= 0 {
+		logger.Warningf("GetMyShipments: Invalid pageSize '%s', using default of 10. Error: %v", pageSizeStr, err)
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		logger.Warningf("GetMyShipments: Requested pageSize %d exceeds max of 100. Capping at 100.", pageSize)
+		pageSize = 100
+	}
+
+	logger.Infof("GetMyShipments: Getting non-archived shipments for current owner: %s (alias: %s) with pageSize: %d, bookmark: '%s'", actor.fullID, actor.alias, pageSize, bookmark)
+	im := NewIdentityManager(ctx)
+
+	queryString := fmt.Sprintf(`{"selector":{"objectType":"%s", "currentOwnerId":"%s", "isArchived":false}, "use_index":"_design/indexObjectTypeOwnerIsArchivedDoc"}`, shipmentObjectType, actor.fullID)
+
+	resultsIterator, metadata, err := ctx.GetStub().GetQueryResultWithPagination(queryString, int32(pageSize), bookmark)
+	if err != nil {
+		logger.Warningf("GetMyShipments: CouchDB GetQueryResultWithPagination for user '%s' failed: %v. Falling back to full scan (SLOW).", actor.fullID, err)
+
+		allResultsIterator, metadataFallback, errScan := ctx.GetStub().GetStateByPartialCompositeKeyWithPagination(shipmentObjectType, []string{}, int32(pageSize), bookmark)
+		if errScan != nil {
+			return nil, fmt.Errorf("GetMyShipments: CouchDB query failed (%v) and LevelDB paginated scan also failed (%w)", err, errScan)
+		}
+		defer allResultsIterator.Close()
+
+		// FIXED: Initialize as empty slice, not nil
+		myFilteredShipments := []*model.Shipment{}
+		var actualFetchedCount int32 = 0
+
+		for allResultsIterator.HasNext() {
+			queryResponse, iterErr := allResultsIterator.Next()
+			if iterErr != nil {
+				logger.Warningf("GetMyShipments fallback: Error iterating results: %v. Skipping.", iterErr)
+				continue
+			}
+
+			var ship model.Shipment
+			if err := json.Unmarshal(queryResponse.Value, &ship); err != nil {
+				logger.Warningf("GetMyShipments fallback: Error unmarshalling shipment: %v. Skipping.", err)
+				continue
+			}
+
+			if ship.CurrentOwnerID == actor.fullID && !ship.IsArchived {
+				ensureShipmentSchemaCompliance(&ship)
+				s.enrichShipmentAliases(im, &ship)
+				ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+				myFilteredShipments = append(myFilteredShipments, &ship)
+				actualFetchedCount++
+			}
+		}
+
+		return &model.PaginatedShipmentResponse{
+			Shipments:    myFilteredShipments, // Will be [] if empty, not null
+			NextBookmark: metadataFallback.GetBookmark(),
+			FetchedCount: actualFetchedCount,
+		}, errors.New("GetMyShipments: Fallback logic triggered, potentially incomplete or slow results. Ensure CouchDB index 'indexObjectTypeOwnerIsArchivedDoc' exists")
+	}
+	defer resultsIterator.Close()
+
+	// FIXED: Initialize as empty slice, not nil
+	shipmentsFromQuery := []*model.Shipment{}
+	var fetchedCountCouchDB int32 = 0
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetMyShipments: Error iterating CouchDB results: %v. Skipping.", iterErr)
+			continue
+		}
+		var ship model.Shipment
+		if errUnmarshal := json.Unmarshal(queryResponse.Value, &ship); errUnmarshal != nil {
+			logger.Warningf("GetMyShipments: Error unmarshalling shipment: %v. Skipping.", errUnmarshal)
+			continue
+		}
+		ensureShipmentSchemaCompliance(&ship)
+		s.enrichShipmentAliases(im, &ship)
+		ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+		shipmentsFromQuery = append(shipmentsFromQuery, &ship)
+		fetchedCountCouchDB++
+	}
+
+	logger.Infof("GetMyShipments (CouchDB): Found %d non-archived shipments for user '%s' on this page.", fetchedCountCouchDB, actor.alias)
+	return &model.PaginatedShipmentResponse{
+		Shipments:    shipmentsFromQuery, // Will be [] if empty, not null
+		NextBookmark: metadata.GetBookmark(),
+		FetchedCount: fetchedCountCouchDB,
+	}, nil
+}
+
+// Fix for GetAllShipments in shipment_query_ops.go
+func (s *FoodtraceSmartContract) GetAllShipments(ctx contractapi.TransactionContextInterface, pageSizeStr string, bookmark string) (*model.PaginatedShipmentResponse, error) {
+	im := NewIdentityManager(ctx)
+	if err := s.requireAdmin(ctx, im); err != nil {
+		return nil, fmt.Errorf("GetAllShipments: %w", err)
+	}
+
+	pageSize, err := strconv.ParseInt(pageSizeStr, 10, 32)
+	if err != nil || pageSize <= 0 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	logger.Infof("GetAllShipments: Admin getting all non-archived shipments (pageSize: %d, bookmark: '%s')", pageSize, bookmark)
+
+	resultsIterator, metadata, err := ctx.GetStub().GetStateByPartialCompositeKeyWithPagination(shipmentObjectType, []string{}, int32(pageSize), bookmark)
+	if err != nil {
+		return nil, fmt.Errorf("GetAllShipments: failed to get shipments iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	// FIXED: Initialize as empty slice, not nil
+	shipments := []*model.Shipment{}
+	fetchedCount := int32(0)
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetAllShipments: Error iterating results: %v. Skipping.", iterErr)
+			continue
+		}
+		var ship model.Shipment
+		if errUnmarshal := json.Unmarshal(queryResponse.Value, &ship); errUnmarshal != nil {
+			logger.Warningf("GetAllShipments: Error unmarshalling shipment: %v. Skipping.", errUnmarshal)
+			continue
+		}
+		if !ship.IsArchived {
+			ensureShipmentSchemaCompliance(&ship)
+			s.enrichShipmentAliases(im, &ship)
+			ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+			shipments = append(shipments, &ship)
+			fetchedCount++
+		}
+	}
+
+	logger.Infof("GetAllShipments: Retrieved %d non-archived shipments for this page.", fetchedCount)
+	return &model.PaginatedShipmentResponse{
+		Shipments:    shipments, // Will be [] if empty, not null
+		NextBookmark: metadata.GetBookmark(),
+		FetchedCount: fetchedCount,
+	}, nil
+}
+
+// Fix for GetShipmentsByStatus in shipment_query_ops.go
+func (s *FoodtraceSmartContract) GetShipmentsByStatus(ctx contractapi.TransactionContextInterface, statusToQuery string, pageSizeStr string, bookmark string) (*model.PaginatedShipmentResponse, error) {
+	logger.Infof("GetShipmentsByStatus: Querying shipments with status '%s', pageSize: '%s', bookmark: '%s'", statusToQuery, pageSizeStr, bookmark)
+	var targetStatus model.ShipmentStatus
+
+	switch strings.ToUpper(statusToQuery) {
+	case string(model.StatusCreated):
+		targetStatus = model.StatusCreated
+	case string(model.StatusPendingCertification):
+		targetStatus = model.StatusPendingCertification
+	case string(model.StatusCertified):
+		targetStatus = model.StatusCertified
+	case string(model.StatusCertificationRejected):
+		targetStatus = model.StatusCertificationRejected
+	case string(model.StatusProcessed):
+		targetStatus = model.StatusProcessed
+	case string(model.StatusDistributed):
+		targetStatus = model.StatusDistributed
+	case string(model.StatusDelivered):
+		targetStatus = model.StatusDelivered
+	case string(model.StatusConsumed):
+		targetStatus = model.StatusConsumed
+	case string(model.StatusRecalled):
+		targetStatus = model.StatusRecalled
+	case string(model.StatusConsumedInProcessing):
+		targetStatus = model.StatusConsumedInProcessing
+	default:
+		return nil, fmt.Errorf("invalid statusToQuery: '%s'", statusToQuery)
+	}
+
+	im := NewIdentityManager(ctx)
+	// NOTE: Authorization removed per previous discussion - now open access
+
+	pageSize, err := strconv.ParseInt(pageSizeStr, 10, 32)
+	if err != nil || pageSize <= 0 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	queryString := fmt.Sprintf(`{"selector":{"objectType":"%s", "status":"%s", "isArchived":false}, "use_index":"_design/indexObjectTypeStatusIsArchivedDoc"}`, shipmentObjectType, targetStatus)
+	resultsIterator, metadata, err := ctx.GetStub().GetQueryResultWithPagination(queryString, int32(pageSize), bookmark)
+	if err != nil {
+		return nil, fmt.Errorf("GetShipmentsByStatus: CouchDB query failed for status '%s': %w. Ensure index 'indexObjectTypeStatusIsArchivedDoc' exists", targetStatus, err)
+	}
+	defer resultsIterator.Close()
+
+	// FIXED: Initialize as empty slice, not nil
+	shipmentsFromQuery := []*model.Shipment{}
+	fetchedCountCouchDB := int32(0)
+
+	for resultsIterator.HasNext() {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetShipmentsByStatus: Error iterating CouchDB results: %v. Skipping.", iterErr)
+			continue
+		}
+		var ship model.Shipment
+		if errUnmarshal := json.Unmarshal(queryResponse.Value, &ship); errUnmarshal != nil {
+			logger.Warningf("GetShipmentsByStatus: Error unmarshalling shipment: %v. Skipping.", errUnmarshal)
+			continue
+		}
+		ensureShipmentSchemaCompliance(&ship)
+		s.enrichShipmentAliases(im, &ship)
+		ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+		shipmentsFromQuery = append(shipmentsFromQuery, &ship)
+		fetchedCountCouchDB++
+	}
+
+	logger.Infof("GetShipmentsByStatus (CouchDB): Found %d non-archived shipments with status '%s' on this page.", fetchedCountCouchDB, targetStatus)
+	return &model.PaginatedShipmentResponse{
+		Shipments:    shipmentsFromQuery, // Will be [] if empty, not null
+		NextBookmark: metadata.GetBookmark(),
+		FetchedCount: fetchedCountCouchDB,
+	}, nil
+}
+
+// Fix for QueryRelatedShipments in shipment_query_ops.go
+func (s *FoodtraceSmartContract) QueryRelatedShipments(ctx contractapi.TransactionContextInterface, recalledShipmentID string, timeWindowHoursStr string) ([]model.RelatedShipmentInfo, error) {
+	im := NewIdentityManager(ctx)
+	if err := s.requireAdmin(ctx, im); err != nil {
+		return nil, fmt.Errorf("QueryRelatedShipments: %w", err)
+	}
+
+	if err := s.validateRequiredString(recalledShipmentID, "recalledShipmentID", maxStringInputLength); err != nil {
+		return nil, err
+	}
+	logger.Infof("Querying related shipments for recalled shipment '%s', window: '%s' hours", recalledShipmentID, timeWindowHoursStr)
+
+	timeWindowHours, err := strconv.Atoi(timeWindowHoursStr)
+	if err != nil || timeWindowHours <= 0 || timeWindowHours > 720 {
+		logger.Warningf("Invalid or out-of-range timeWindowHours '%s', using default %d hours. Error: %v", timeWindowHoursStr, defaultRecallQueryHours, err)
+		timeWindowHours = defaultRecallQueryHours
+	}
+	timeWindow := time.Duration(timeWindowHours) * time.Hour
+
+	rShip, err := s.getShipmentByID(ctx, recalledShipmentID)
+	if err != nil {
+		return nil, fmt.Errorf("QueryRelatedShipments: recalled shipment '%s' not found: %w", recalledShipmentID, err)
+	}
+	if !rShip.RecallInfo.IsRecalled {
+		return nil, fmt.Errorf("shipment '%s' is not marked as recalled, cannot query related items based on its recall data", recalledShipmentID)
+	}
+
+	// FIXED: Initialize as empty slice, not nil
+	relatedShipments := []model.RelatedShipmentInfo{}
+
+	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey(shipmentObjectType, []string{})
+	if err != nil {
+		return nil, fmt.Errorf("QueryRelatedShipments: failed to get shipment iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	for resultsIterator.HasNext() {
+		resp, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("QueryRelatedShipments: Error iterating results: %v. Skipping.", iterErr)
+			continue
+		}
+		var oShip model.Shipment
+		if err := json.Unmarshal(resp.Value, &oShip); err != nil {
+			logger.Warningf("QueryRelatedShipments: Error unmarshalling shipment: %v. Skipping.", err)
+			continue
+		}
+		ensureShipmentSchemaCompliance(&oShip)
+		s.enrichShipmentAliases(im, &oShip)
+
+		if oShip.ID == recalledShipmentID {
+			continue
+		}
+		if oShip.RecallInfo.IsRecalled && oShip.RecallInfo.RecallID == rShip.RecallInfo.RecallID {
+			continue
+		}
+
+		// Check ProcessorData linkage
+		if rShip.ProcessorData != nil && oShip.ProcessorData != nil &&
+			rShip.ProcessorData.ProcessorID == oShip.ProcessorData.ProcessorID &&
+			rShip.ProcessorData.ProcessingLineID == oShip.ProcessorData.ProcessingLineID {
+			if !rShip.ProcessorData.DateProcessed.IsZero() && !oShip.ProcessorData.DateProcessed.IsZero() {
+				if timeDiff := rShip.ProcessorData.DateProcessed.Sub(oShip.ProcessorData.DateProcessed); AbsDuration(timeDiff) <= timeWindow {
+					relatedShipments = append(relatedShipments, model.RelatedShipmentInfo{
+						ShipmentID:        oShip.ID,
+						ProductName:       oShip.ProductName,
+						Status:            oShip.Status,
+						CurrentOwnerID:    oShip.CurrentOwnerID,
+						CurrentOwnerAlias: oShip.CurrentOwnerAlias,
+						RelationReason:    "Same processing line within time window",
+						ActorID:           oShip.ProcessorData.ProcessorID,
+						ActorAlias:        oShip.ProcessorData.ProcessorAlias,
+						LineID:            oShip.ProcessorData.ProcessingLineID,
+						EventTimestamp:    oShip.ProcessorData.DateProcessed,
+					})
+					continue
+				}
+			}
+		}
+
+		// Check DistributorData linkage
+		if rShip.DistributorData != nil && oShip.DistributorData != nil &&
+			rShip.DistributorData.DistributorID == oShip.DistributorData.DistributorID &&
+			rShip.DistributorData.DistributionLineID == oShip.DistributorData.DistributionLineID {
+			if !rShip.DistributorData.PickupDateTime.IsZero() && !oShip.DistributorData.PickupDateTime.IsZero() {
+				if timeDiff := rShip.DistributorData.PickupDateTime.Sub(oShip.DistributorData.PickupDateTime); AbsDuration(timeDiff) <= timeWindow {
+					relatedShipments = append(relatedShipments, model.RelatedShipmentInfo{
+						ShipmentID:        oShip.ID,
+						ProductName:       oShip.ProductName,
+						Status:            oShip.Status,
+						CurrentOwnerID:    oShip.CurrentOwnerID,
+						CurrentOwnerAlias: oShip.CurrentOwnerAlias,
+						RelationReason:    "Same distribution line within time window",
+						ActorID:           oShip.DistributorData.DistributorID,
+						ActorAlias:        oShip.DistributorData.DistributorAlias,
+						LineID:            oShip.DistributorData.DistributionLineID,
+						EventTimestamp:    oShip.DistributorData.PickupDateTime,
+					})
+					continue
+				}
+			}
+		}
+
+		// Check FarmerData linkage
+		if rShip.FarmerData != nil && oShip.FarmerData != nil &&
+			rShip.FarmerData.FarmerID == oShip.FarmerData.FarmerID &&
+			rShip.FarmerData.FarmLocation == oShip.FarmerData.FarmLocation {
+			if !rShip.FarmerData.HarvestDate.IsZero() && !oShip.FarmerData.HarvestDate.IsZero() {
+				if timeDiff := rShip.FarmerData.HarvestDate.Sub(oShip.FarmerData.HarvestDate); AbsDuration(timeDiff) <= timeWindow {
+					relatedShipments = append(relatedShipments, model.RelatedShipmentInfo{
+						ShipmentID:        oShip.ID,
+						ProductName:       oShip.ProductName,
+						Status:            oShip.Status,
+						CurrentOwnerID:    oShip.CurrentOwnerID,
+						CurrentOwnerAlias: oShip.CurrentOwnerAlias,
+						RelationReason:    "Same farm and harvest period",
+						ActorID:           oShip.FarmerData.FarmerID,
+						ActorAlias:        oShip.FarmerData.FarmerAlias,
+						LineID:            "",
+						EventTimestamp:    oShip.FarmerData.HarvestDate,
+					})
+					continue
+				}
+			}
+		}
+	}
+	logger.Infof("QueryRelatedShipments: Found %d potentially related shipments for recalled shipment '%s'", len(relatedShipments), recalledShipmentID)
+	return relatedShipments, nil // Will be [] if empty, not null
+}
+
+// Fix for processShipmentIterator in shipment_query_ops.go
+func (s *FoodtraceSmartContract) processShipmentIterator(ctx contractapi.TransactionContextInterface, iterator shim.StateQueryIteratorInterface, enrichAliases bool) ([]*model.Shipment, error) {
+	// FIXED: Initialize as empty slice, not nil
+	shipments := []*model.Shipment{}
+	im := NewIdentityManager(ctx)
+
+	for iterator.HasNext() {
+		queryResponse, err := iterator.Next()
+		if err != nil {
+			logger.Warningf("processShipmentIterator: Error getting next item from iterator: %v. Skipping.", err)
+			continue
+		}
+		var ship model.Shipment
+		if err = json.Unmarshal(queryResponse.Value, &ship); err != nil {
+			logger.Warningf("processShipmentIterator: Error unmarshalling shipment from iterator (key: %s): %v. Skipping.", queryResponse.Key, err)
+			continue
+		}
+		ensureShipmentSchemaCompliance(&ship)
+		if enrichAliases {
+			s.enrichShipmentAliases(im, &ship)
+		}
+		shipments = append(shipments, &ship)
+	}
+	return shipments, nil // Will be [] if empty, not null
+}
+
+// Fix for GetMyActionableShipments (from earlier artifact)
+func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.TransactionContextInterface, pageSizeStr string, bookmark string) (*model.PaginatedShipmentResponse, error) {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetMyActionableShipments: failed to get actor info: %w", err)
+	}
+
+	im := NewIdentityManager(ctx)
+	isCallerAdmin, _ := im.IsCurrentUserAdmin()
+	// FIXED: Initialize as empty slice, not nil
+	userRoles := []string{}
+
+	if !isCallerAdmin {
+		idInfo, err := im.GetIdentityInfo(actor.fullID)
+		if err != nil {
+			return nil, fmt.Errorf("GetMyActionableShipments: failed to get caller's identity info: %w", err)
+		}
+		userRoles = idInfo.Roles
+	}
+
+	pageSize, err := strconv.ParseInt(pageSizeStr, 10, 32)
+	if err != nil || pageSize <= 0 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	logger.Infof("GetMyActionableShipments: Getting actionable shipments for '%s' (alias: %s) with roles: %v, admin: %v",
+		actor.fullID, actor.alias, userRoles, isCallerAdmin)
+
+	resultsIterator, metadata, err := ctx.GetStub().GetStateByPartialCompositeKeyWithPagination(shipmentObjectType, []string{}, int32(pageSize*3), bookmark)
+	if err != nil {
+		return nil, fmt.Errorf("GetMyActionableShipments: failed to get shipments iterator: %w", err)
+	}
+	defer resultsIterator.Close()
+
+	// FIXED: Initialize as empty slice, not nil
+	actionableShipments := []*model.Shipment{}
+	fetchedCount := int32(0)
+	totalScanned := 0
+
+	for resultsIterator.HasNext() && fetchedCount < int32(pageSize) {
+		queryResponse, iterErr := resultsIterator.Next()
+		if iterErr != nil {
+			logger.Warningf("GetMyActionableShipments: Error iterating results: %v. Skipping.", iterErr)
+			continue
+		}
+
+		totalScanned++
+		var ship model.Shipment
+		if errUnmarshal := json.Unmarshal(queryResponse.Value, &ship); errUnmarshal != nil {
+			logger.Warningf("GetMyActionableShipments: Error unmarshalling shipment: %v. Skipping.", errUnmarshal)
+			continue
+		}
+
+		if ship.IsArchived || (ship.RecallInfo != nil && ship.RecallInfo.IsRecalled) {
+			continue
+		}
+
+		canAct, actionType := s.canUserActOnShipment(&ship, actor.fullID, userRoles, isCallerAdmin)
+		if canAct {
+			ensureShipmentSchemaCompliance(&ship)
+			s.enrichShipmentAliases(im, &ship)
+			ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+
+			actionableShipments = append(actionableShipments, &ship)
+			fetchedCount++
+
+			logger.Debugf("GetMyActionableShipments: Shipment '%s' actionable by '%s' - Action: %s",
+				ship.ID, actor.alias, actionType)
+		}
+	}
+
+	logger.Infof("GetMyActionableShipments: Found %d actionable shipments for '%s' (scanned %d total)",
+		fetchedCount, actor.alias, totalScanned)
+
+	return &model.PaginatedShipmentResponse{
+		Shipments:    actionableShipments, // Will be [] if empty, not null
+		NextBookmark: metadata.GetBookmark(),
+		FetchedCount: fetchedCount,
+	}, nil
+}
+
+// Helper function to determine if a user can act on a shipment
+func (s *FoodtraceSmartContract) canUserActOnShipment(shipment *model.Shipment, userFullID string, userRoles []string, isAdmin bool) (bool, string) {
+	// Admins can act on any shipment
+	if isAdmin {
+		return true, "ADMIN_ACTION"
+	}
+
+	// Check role-based actions
+	hasRole := func(role string) bool {
+		for _, r := range userRoles {
+			if r == role {
+				return true
+			}
+		}
+		return false
+	}
+
+	switch shipment.Status {
+	case model.StatusCreated:
+		// Farmers can submit their own shipments for certification
+		if shipment.CurrentOwnerID == userFullID && hasRole("farmer") {
+			return true, "SUBMIT_FOR_CERTIFICATION"
+		}
+
+		// Processors can process shipments designated for them
+		if shipment.FarmerData != nil && shipment.FarmerData.DestinationProcessorID == userFullID && hasRole("processor") {
+			return true, "PROCESS_SHIPMENT"
+		}
+
+	case model.StatusPendingCertification:
+		// Any certifier can certify any pending shipment
+		if hasRole("certifier") {
+			return true, "RECORD_CERTIFICATION"
+		}
+
+	case model.StatusCertified:
+		// Processors can process certified shipments designated for them
+		if shipment.FarmerData != nil && shipment.FarmerData.DestinationProcessorID == userFullID && hasRole("processor") {
+			return true, "PROCESS_SHIPMENT"
+		}
+
+	case model.StatusProcessed:
+		// Distributors can distribute shipments designated for them
+		if shipment.ProcessorData != nil && shipment.ProcessorData.DestinationDistributorID == userFullID && hasRole("distributor") {
+			return true, "DISTRIBUTE_SHIPMENT"
+		}
+
+	case model.StatusDistributed:
+		// Retailers can receive shipments designated for them
+		if shipment.DistributorData != nil && shipment.DistributorData.DestinationRetailerID == userFullID && hasRole("retailer") {
+			return true, "RECEIVE_SHIPMENT"
+		}
+
+	case model.StatusDelivered:
+		// Current owner (retailer) can mark as consumed
+		if shipment.CurrentOwnerID == userFullID && hasRole("retailer") {
+			return true, "MARK_CONSUMED"
+		}
+
+		// Processors can use delivered shipments in transformations if they own them
+		if shipment.CurrentOwnerID == userFullID && hasRole("processor") {
+			return true, "USE_IN_TRANSFORMATION"
+		}
+
+	case model.StatusRecalled:
+		// No actions typically allowed on recalled shipments
+		return false, ""
+
+	case model.StatusConsumed, model.StatusConsumedInProcessing:
+		// No further actions on consumed shipments
+		return false, ""
+
+	case model.StatusCertificationRejected:
+		// Owner might be able to resubmit or take corrective action
+		if shipment.CurrentOwnerID == userFullID {
+			return true, "RESUBMIT_OR_CORRECT"
+		}
+	}
+
+	// Check if user can initiate recall (current owner can recall)
+	if shipment.CurrentOwnerID == userFullID {
+		return true, "INITIATE_RECALL"
+	}
+
+	return false, ""
+}
+
+// Alternative function that returns actionable shipments with action metadata
+func (s *FoodtraceSmartContract) GetMyActionableShipmentsWithActions(ctx contractapi.TransactionContextInterface, pageSizeStr string, bookmark string) (map[string]interface{}, error) {
+	result, err := s.GetMyActionableShipments(ctx, pageSizeStr, bookmark)
+	if err != nil {
+		return nil, err
+	}
+
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetMyActionableShipmentsWithActions: failed to get actor info: %w", err)
+	}
+
+	im := NewIdentityManager(ctx)
+	isCallerAdmin, _ := im.IsCurrentUserAdmin()
+	userRoles := []string{}
+
+	if !isCallerAdmin {
+		idInfo, err := im.GetIdentityInfo(actor.fullID)
+		if err == nil && idInfo != nil {
+			userRoles = idInfo.Roles
+		}
+	}
+
+	// Add action information to each shipment
+	shipmentsWithActions := make([]map[string]interface{}, len(result.Shipments))
+	for i, shipment := range result.Shipments {
+		_, actionType := s.canUserActOnShipment(shipment, actor.fullID, userRoles, isCallerAdmin)
+
+		shipmentsWithActions[i] = map[string]interface{}{
+			"shipment":   shipment,
+			"actionType": actionType,
+			"canAct":     true, // All shipments in this result are actionable
+		}
+	}
+
+	return map[string]interface{}{
+		"shipments":    shipmentsWithActions,
+		"nextBookmark": result.NextBookmark,
+		"fetchedCount": result.FetchedCount,
+		"userInfo": map[string]interface{}{
+			"fullId":  actor.fullID,
+			"alias":   actor.alias,
+			"roles":   userRoles,
+			"isAdmin": isCallerAdmin,
+		},
+	}, nil
+}
+// File: model/identities.go
+package model
+
+import "time"
+
+// IdentityInfo stores information about registered participants in the system.
+type IdentityInfo struct {
+	ObjectType      string    `json:"objectType"`      // Set to the composite key object type (IdentityInfo)
+	FullID          string    `json:"fullId"`          // Full X.509 identity string
+	ShortName       string    `json:"shortName"`       // Alias/short name for this identity
+	EnrollmentID    string    `json:"enrollmentId"`    // EnrollmentID from certificate or registration
+	OrganizationMSP string    `json:"organizationMsp"` // MSP ID of the organization
+	Roles           []string  `json:"roles"`           // List of roles assigned to this identity
+	IsAdmin         bool      `json:"isAdmin"`         // Whether this identity has admin privileges
+	RegisteredBy    string    `json:"registeredBy"`    // Full ID of identity that registered this one
+	RegisteredAt    time.Time `json:"registeredAt"`    // Timestamp when identity was registered
+	LastUpdatedAt   time.Time `json:"lastUpdatedAt"`   // Timestamp of last update to this record
+}
+package model
+
+import "time"
+
+// ShipmentStatus defines the possible states of a shipment.
+type ShipmentStatus string
+
+const (
+	StatusCreated               ShipmentStatus = "CREATED"                // Shipment registered by farmer
+	StatusPendingCertification  ShipmentStatus = "PENDING_CERTIFICATION"  // Shipment awaiting certifier action
+	StatusCertified             ShipmentStatus = "CERTIFIED"              // Shipment certified by certifier
+	StatusCertificationRejected ShipmentStatus = "CERTIFICATION_REJECTED" // Shipment certification rejected by certifier
+	StatusProcessed             ShipmentStatus = "PROCESSED"              // Shipment processed by processor
+	StatusDistributed           ShipmentStatus = "DISTRIBUTED"            // Shipment distributed by distributor
+	StatusDelivered             ShipmentStatus = "DELIVERED"              // Shipment received by retailer
+	StatusConsumed              ShipmentStatus = "CONSUMED"               // (Optional) Shipment marked as consumed/sold by retailer
+	StatusRecalled              ShipmentStatus = "RECALLED"               // Shipment has been recalled
+	StatusConsumedInProcessing  ShipmentStatus = "CONSUMED_IN_PROCESSING" // Input shipment consumed in a transformation
+)
+
+// CertificationStatus defines the possible states of an organic certification.
+type CertificationStatus string
+
+const (
+	CertStatusPending  CertificationStatus = "PENDING"
+	CertStatusApproved CertificationStatus = "APPROVED"
+	CertStatusRejected CertificationStatus = "REJECTED"
+)
+
+// FarmerData holds information specific to the farming stage.
+type FarmerData struct {
+	FarmerID                  string    `json:"farmerId"`
+	FarmerName                string    `json:"farmerName"`
+	FarmerAlias               string    `json:"farmerAlias"`
+	FarmLocation              string    `json:"farmLocation"`
+	CropType                  string    `json:"cropType"`
+	PlantingDate              time.Time `json:"plantingDate"`
+	FertilizerUsed            string    `json:"fertilizerUsed"`
+	CertificationDocumentHash string    `json:"certificationDocumentHash"`
+	CertificationDocumentURL  string    `json:"certificationDocumentURL"`
+	HarvestDate               time.Time `json:"harvestDate"`
+	FarmingPractice           string    `json:"farmingPractice"`
+	DestinationProcessorID    string    `json:"destinationProcessorId"`
+}
+
+// ProcessorData holds information specific to the processing stage.
+type ProcessorData struct {
+	ProcessorID              string    `json:"processorId"`
+	ProcessorAlias           string    `json:"processorAlias"`
+	DateProcessed            time.Time `json:"dateProcessed"`
+	ProcessingType           string    `json:"processingType"`
+	ProcessingLineID         string    `json:"processingLineId"`
+	ProcessingLocation       string    `json:"processingLocation"`
+	ContaminationCheck       string    `json:"contaminationCheck"`
+	OutputBatchID            string    `json:"outputBatchId"` // For simple processing; for transformations, new Shipment.ID is used.
+	ExpiryDate               time.Time `json:"expiryDate"`
+	QualityCertifications    []string  `json:"qualityCertifications"`
+	DestinationDistributorID string    `json:"destinationDistributorId"`
+}
+
+// CertificationRecord holds information specific to an organic certification event.
+type CertificationRecord struct {
+	CertifierID          string              `json:"certifierId"`
+	CertifierAlias       string              `json:"certifierAlias"`
+	InspectionDate       time.Time           `json:"inspectionDate"`
+	InspectionReportHash string              `json:"inspectionReportHash"`
+	InspectionReportURL  string              `json:"inspectionReportURL"`
+	Status               CertificationStatus `json:"status"`
+	Comments             string              `json:"comments"`
+	CertifiedAt          time.Time           `json:"certifiedAt"`
+}
+
+// DistributorData holds information specific to the distribution stage.
+type DistributorData struct {
+	DistributorID         string    `json:"distributorId"`
+	DistributorAlias      string    `json:"distributorAlias"`
+	PickupDateTime        time.Time `json:"pickupDateTime"`
+	DeliveryDateTime      time.Time `json:"deliveryDateTime"`
+	DistributionLineID    string    `json:"distributionLineId"`
+	TemperatureRange      string    `json:"temperatureRange"`
+	StorageTemperature    float64   `json:"storageTemperature"`
+	TransitLocationLog    []string  `json:"transitLocationLog"`
+	TransportConditions   string    `json:"transportConditions"`
+	DistributionCenter    string    `json:"distributionCenter"`
+	DestinationRetailerID string    `json:"destinationRetailerId"`
+}
+
+// RetailerData holds information specific to the retail stage.
+type RetailerData struct {
+	RetailerID         string    `json:"retailerId"`
+	RetailerAlias      string    `json:"retailerAlias"`
+	DateReceived       time.Time `json:"dateReceived"`
+	RetailerLineID     string    `json:"retailerLineId"`
+	ProductNameRetail  string    `json:"productNameRetail"`
+	ShelfLife          string    `json:"shelfLife"`
+	SellByDate         time.Time `json:"sellByDate"`
+	RetailerExpiryDate time.Time `json:"retailerExpiryDate"`
+	StoreID            string    `json:"storeId"`
+	StoreLocation      string    `json:"storeLocation"`
+	Price              float64   `json:"price"`
+	QRCodeLink         string    `json:"qrCodeLink"`
+}
+
+// RecallInfo holds information about a shipment recall.
+type RecallInfo struct {
+	IsRecalled        bool      `json:"isRecalled"`
+	RecallID          string    `json:"recallId"`
+	RecallReason      string    `json:"recallReason"`
+	RecallDate        time.Time `json:"recallDate"`
+	RecalledBy        string    `json:"recalledBy"`
+	RecalledByAlias   string    `json:"recalledByAlias"`
+	LinkedShipmentIDs []string  `json:"linkedShipmentIds"`
+}
+
+// Shipment is the central data structure for tracking a food item through the supply chain.
+type Shipment struct {
+	ObjectType           string                `json:"objectType"`  // "Shipment"
+	ID                   string                `json:"id"`          // Unique ID for the shipment
+	ProductName          string                `json:"productName"` // General product name
+	Description          string                `json:"description"`
+	Quantity             float64               `json:"quantity"`
+	UnitOfMeasure        string                `json:"unitOfMeasure"`
+	CurrentOwnerID       string                `json:"currentOwnerId"`
+	CurrentOwnerAlias    string                `json:"currentOwnerAlias"`
+	Status               ShipmentStatus        `json:"status"`
+	CreatedAt            time.Time             `json:"createdAt"`
+	LastUpdatedAt        time.Time             `json:"lastUpdatedAt"`
+	IsArchived           bool                  `json:"isArchived"`
+	InputShipmentIDs     []string              `json:"inputShipmentIds"` // IDs of shipments consumed to create this one
+	IsDerivedProduct     bool                  `json:"isDerivedProduct"`           // True if this shipment was created from other input shipments
+	FarmerData           *FarmerData           `json:"farmerData"`
+	CertificationRecords []CertificationRecord `json:"certificationRecords"`
+	ProcessorData        *ProcessorData        `json:"processorData"`
+	DistributorData      *DistributorData      `json:"distributorData"`
+	RetailerData         *RetailerData         `json:"retailerData"`
+	RecallInfo           *RecallInfo           `json:"recallInfo"`
+	History              []HistoryEntry        `json:"history"` // Populated by GetShipmentPublicDetails
+}
+
+// HistoryEntry represents one historical state of a shipment or an event.
+type HistoryEntry struct {
+	TxID       string    `json:"txId"`
+	Timestamp  time.Time `json:"timestamp"`
+	IsDelete   bool      `json:"isDelete"`
+	Value      string    `json:"value"`                // Raw JSON value of the asset at that time
+	ActorID    string    `json:"actorId"`    // Best guess of the actor based on CurrentOwnerID at the time
+	ActorAlias string    `json:"actorAlias"` // Best guess of the actor's alias
+	Action     string    `json:"action"`     // Description of the action (e.g., status change)
+}
+
+// RelatedShipmentInfo is used to return information about shipments related to a recall.
+type RelatedShipmentInfo struct {
+	ShipmentID        string         `json:"shipmentId"`
+	ProductName       string         `json:"productName"`
+	Status            ShipmentStatus `json:"status"`
+	CurrentOwnerID    string         `json:"currentOwnerId"`
+	CurrentOwnerAlias string         `json:"currentOwnerAlias"`
+	RelationReason    string         `json:"relationReason"`
+	ActorID           string         `json:"actorId"` // ID of the actor involved in the related event (e.g., processor)
+	ActorAlias        string         `json:"actorAlias"`
+	LineID            string         `json:"lineId"` // e.g., processingLineId or distributionLineId
+	EventTimestamp    time.Time      `json:"eventTimestamp"`   // Timestamp of the relating event (e.g., DateProcessed)
+}
+
+// InputShipmentConsumptionDetail defines the ID of an input shipment to be fully consumed.
+type InputShipmentConsumptionDetail struct {
+	ShipmentID string `json:"shipmentId"` // ID of the input shipment (ingredient) to be fully consumed
+}
+
+// NewProductDetail defines the properties of a new product created from a transformation.
+type NewProductDetail struct {
+	NewShipmentID string  `json:"newShipmentId"`
+	ProductName   string  `json:"productName"`
+	Description   string  `json:"description"`
+	Quantity      float64 `json:"quantity"`
+	UnitOfMeasure string  `json:"unitOfMeasure"`
+}
+
+// PaginatedShipmentResponse is the structure returned by paginated shipment queries.
+type PaginatedShipmentResponse struct {
+	Shipments    []*Shipment `json:"shipments"`
+	NextBookmark string      `json:"nextBookmark"`
+	FetchedCount int32       `json:"fetchedCount"`
+}
+package main
+
+import (
+	"foodtrace/contract"
+
+	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+)
+
+func main() {
+	cc, err := contractapi.NewChaincode(&contract.FoodtraceSmartContract{})
+	if err != nil {
+		panic("Error creating FoodtraceSmartContract: " + err.Error())
+	}
+	if err := cc.Start(); err != nil {
+		panic("Error starting chaincode: " + err.Error())
+	}
+}

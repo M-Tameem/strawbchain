@@ -1,0 +1,61 @@
+{
+    "name": "foodtrace-bff-server",
+    "version": "1.0.0",
+    "description": "Backend For Frontend server for Foodtrace blockchain system",
+    "main": "server.js",
+    "scripts": {
+        "start": "node start.js",
+        "dev": "nodemon start.js",
+        "server": "node server.js",
+        "bootstrap": "node bootstrap.js",
+        "bootstrap:force": "node start.js --force-bootstrap",
+        "import-admin": "node import-admin.js",
+        "check": "node start.js --check-only",
+        "test": "node test-server.js",
+        "test:jest": "jest",
+        "test:unit": "jest --testPathPattern=unit",
+        "test:integration": "jest --testPathPattern=integration",
+        "db:list": "node db-utils.js list",
+        "db:stats": "node db-utils.js stats",
+        "db:backup": "node db-utils.js backup",
+        "db:help": "node db-utils.js help",
+        "docker:build": "docker build -t foodtrace-bff .",
+        "docker:run": "docker run -p 3001:3001 --env-file .env foodtrace-bff",
+        "docker:compose": "docker-compose up -d",
+        "docker:logs": "docker-compose logs -f",
+        "docker:stop": "docker-compose down"
+    },
+    "keywords": [
+        "blockchain",
+        "hyperledger",
+        "fabric",
+        "kaleido",
+        "food",
+        "traceability",
+        "supply-chain"
+    ],
+    "author": "Your Name",
+    "license": "MIT",
+    "dependencies": {
+        "axios": "^1.9.0",
+        "bcrypt": "^5.1.1",
+        "cors": "^2.8.5",
+        "form-data": "^4.0.0",
+        "dotenv": "^16.3.1",
+        "express": "^4.18.2",
+        "express-rate-limit": "^7.1.5",
+        "multer": "^1.4.5-lts.1",
+        "qrcode": "^1.5.4",
+        "helmet": "^7.1.0",
+        "jsonwebtoken": "^9.0.2",
+        "sqlite3": "^5.1.6"
+    },
+    "devDependencies": {
+        "jest": "^29.7.0",
+        "nodemon": "^3.0.2",
+        "supertest": "^6.3.3"
+    },
+    "engines": {
+        "node": ">=16.0.0"
+    }
+}
