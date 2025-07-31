@@ -3,8 +3,9 @@
 This repository implements an end-to-end food supply chain tracing system built on Hyperledger Fabric. The solution is composed of three major parts:
 
 1. **Chaincode** (`./chaincode`)
-   - Smart contract written in Go.
-   - Manages shipment lifecycle, organic certifications, processing, distribution, retail events and recall operations.
+- Smart contract written in Go.
+- Manages shipment lifecycle, organic certifications, processing, distribution, retail events and recall operations.
+- Supports pest monitoring, cooling SLA checks and distributor temperature logging.
    - Provides identity management utilities so each organization can register identities and assign roles.
    - Persists all shipment data on the Fabric ledger.
 

@@ -21,6 +21,7 @@ import ArchiveShipmentForm from '@/components/ArchiveShipmentForm';
 import ShipmentMapView from '@/components/ShipmentMapView';
 import TransformProductsForm from '@/components/TransformProductsForm';
 import QrCodeDisplay from '@/components/QrCodeDisplay';
+import TemperatureLoggerForm from '@/components/TemperatureLoggerForm';
 
 const ShipmentDetails = () => {
   const { id: paramId } = useParams<{ id: string }>();
@@ -37,6 +38,7 @@ const ShipmentDetails = () => {
   const [showRecallForm, setShowRecallForm] = useState(false);
   const [showArchiveForm, setShowArchiveForm] = useState(false);
   const [showTransformForm, setShowTransformForm] = useState(false);
+  const [showTempForm, setShowTempForm] = useState(false);
 
   useEffect(() => {
     console.log("ShipmentDetails useEffect: 'paramId' from useParams:", paramId);
@@ -169,7 +171,12 @@ const ShipmentDetails = () => {
     return user?.role === 'retailer' &&
            shipment?.status === 'DISTRIBUTED' &&
            user?.fullId &&
-           shipment?.distributorData?.destinationRetailerId === user.fullId;
+          shipment?.distributorData?.destinationRetailerId === user.fullId;
+  };
+
+  const canLogTemp = () => {
+    return user?.role === 'distributor' && shipment?.status === 'DISTRIBUTED' &&
+           shipment?.distributorData?.distributorId === user.fullId;
   };
 
   const canUserCertify = () => { /* ... same ... */
@@ -256,6 +263,7 @@ const ShipmentDetails = () => {
             {canProcess() && ( <Button onClick={() => { console.log("Process btn clicked. ID:", effectiveShipmentId); setShowProcessForm(true); }} className="bg-blue-600 hover:bg-blue-700"> Process Shipment </Button> )}
             {canDistribute() && ( <Button onClick={() => { console.log("Distribute btn clicked. ID:", effectiveShipmentId); setShowDistributeForm(true); }} className="bg-yellow-500 hover:bg-yellow-600 text-black"> Distribute Shipment </Button> )}
             {canReceive() && ( <Button onClick={() => { console.log("Receive btn clicked. ID:", effectiveShipmentId); setShowReceiveForm(true); }} className="bg-purple-600 hover:bg-purple-700"> Receive Shipment </Button> )}
+            {canLogTemp() && ( <Button onClick={() => setShowTempForm(true)} className="bg-orange-500 hover:bg-orange-600 text-white">Log Temp</Button> )}
             {canUserCertify() && ( <Button onClick={() => { console.log("Record Cert btn clicked. ID:", effectiveShipmentId); setShowCertificationForm(true); }} className="bg-green-600 hover:bg-green-700"> Record Certification </Button> )}
             {canTransform() && ( <Button onClick={() => setShowTransformForm(true)} className="bg-purple-500 hover:bg-purple-600 text-white">Transform</Button> )}
             {canRecall() && ( <Button onClick={() => setShowRecallForm(true)} className="bg-red-600 hover:bg-red-700">Recall</Button> )}
@@ -272,6 +280,7 @@ const ShipmentDetails = () => {
         {showRecallForm && effectiveShipmentId && (<RecallForm shipmentId={effectiveShipmentId} onSuccess={() => { setShowRecallForm(false); if(paramId) loadShipmentDetails(paramId); }} onCancel={() => setShowRecallForm(false)} />)}
         {showArchiveForm && effectiveShipmentId && (<ArchiveShipmentForm shipmentId={effectiveShipmentId} onSuccess={() => { setShowArchiveForm(false); if(paramId) loadShipmentDetails(paramId); }} onCancel={() => setShowArchiveForm(false)} />)}
         {showTransformForm && effectiveShipmentId && (<TransformProductsForm shipmentId={effectiveShipmentId} onSuccess={() => { setShowTransformForm(false); if(paramId) loadShipmentDetails(paramId); }} onCancel={() => setShowTransformForm(false)} />)}
+        {showTempForm && effectiveShipmentId && (<TemperatureLoggerForm shipmentId={effectiveShipmentId} onSuccess={() => { setShowTempForm(false); if(paramId) loadShipmentDetails(paramId); }} onCancel={() => setShowTempForm(false)} />)}
 
         {/* Timeline Card ... (no change) ... */}
         <Card>

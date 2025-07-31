@@ -51,6 +51,9 @@ const CreateShipment = () => {
     bufferZoneMeters: "",
     destinationProcessorId: "",
     certificationDocumentHash: "",
+    pestFreeConfirmation: "yes",
+    pestsFound: "",
+    pestActions: "",
   });
   const [uploading, setUploading] = useState(false);
 
@@ -104,6 +107,9 @@ const CreateShipment = () => {
       bufferZoneMeters: "10",
       destinationProcessorId: "PROCESSOR_MAIN_HUB_01",
       certificationDocumentHash: "demoDocHash_abc123xyz789_organicApples",
+      pestFreeConfirmation: "yes",
+      pestsFound: "",
+      pestActions: "",
     });
     toast({
       title: "Demo Data Loaded",
@@ -216,6 +222,9 @@ const CreateShipment = () => {
         bufferZoneMeters: parseFloat(formData.bufferZoneMeters),
         destinationProcessorId: formData.destinationProcessorId.trim(),
         certificationDocumentHash: formData.certificationDocumentHash.trim(),
+        pestFreeConfirmation: formData.pestFreeConfirmation === 'yes',
+        pestsFound: formData.pestsFound.trim() ? formData.pestsFound.split(',').map(p => p.trim()).filter(p => p) : [],
+        pestTreatmentActions: formData.pestActions.trim(),
       };
 
       const shipmentPayload = {
@@ -567,6 +576,42 @@ const CreateShipment = () => {
                     handleInputChange("fertilizerUsed", e.target.value)
                   }
                   placeholder="List fertilizers, nutrients, or treatments used"
+                  rows={2}
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="pestFreeConfirmation">Pest Free?</Label>
+                  <Select
+                    value={formData.pestFreeConfirmation}
+                    onValueChange={(v) => handleInputChange("pestFreeConfirmation", v)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="yes">Yes</SelectItem>
+                      <SelectItem value="no">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="pestsFound">Pests Found (comma-separated)</Label>
+                  <Input
+                    id="pestsFound"
+                    value={formData.pestsFound}
+                    onChange={(e) => handleInputChange("pestsFound", e.target.value)}
+                    placeholder="e.g., spider-mites, Botrytis"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="pestActions">Actions Taken if Pests Found</Label>
+                <Textarea
+                  id="pestActions"
+                  value={formData.pestActions}
+                  onChange={(e) => handleInputChange("pestActions", e.target.value)}
                   rows={2}
                 />
               </div>

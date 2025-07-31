@@ -839,6 +839,23 @@ app.post('/api/shipments/:id/distribute', authenticateToken, requireRole(['distr
   }
 });
 
+app.post('/api/shipments/:id/log-temperature', authenticateToken, requireRole(['distributor']), async (req, res) => {
+  try {
+    const { reading } = req.body;
+    const result = await invokeChaincode(req.user.kid_name, 'LogTemperatureReading', [
+      req.params.id, JSON.stringify(reading)
+    ]);
+    if (isCallSuccessful(result)) {
+      res.json({ message: 'Temperature logged' });
+    } else {
+      res.status(500).json({ error: 'Failed to log temperature', details: result });
+    }
+  } catch (error) {
+    console.error('Log temperature error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.post('/api/shipments/:id/receive', authenticateToken, requireRole(['retailer']), async (req, res) => {
   try {
     const { retailerData } = req.body;

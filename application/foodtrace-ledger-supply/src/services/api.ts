@@ -124,6 +124,13 @@ class ApiClient {
     });
   }
 
+  async logTemperature(shipmentId: string, reading: any) {
+    return this.request<any>(`/api/shipments/${encodeURIComponent(shipmentId)}/log-temperature`, {
+      method: 'POST',
+      body: JSON.stringify({ reading }),
+    });
+  }
+
   async distributeShipment(shipmentId: string, distributorData: any) {
     return this.request<any>(`/api/shipments/${encodeURIComponent(shipmentId)}/distribute`, {
       method: 'POST',

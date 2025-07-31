@@ -86,3 +86,59 @@ func (s *FoodtraceSmartContract) DistributeShipment(ctx contractapi.TransactionC
 	logger.Infof("Shipment '%s' distributed by '%s'", shipmentID, actor.alias)
 	return nil
 }
+
+// LogTemperatureReading records a temperature reading for a shipment in transit.
+func (s *FoodtraceSmartContract) LogTemperatureReading(ctx contractapi.TransactionContextInterface, shipmentID string, readingJSON string) error {
+	actor, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("LogTemperatureReading: failed to get actor info: %w", err)
+	}
+	im := NewIdentityManager(ctx)
+	if err := im.RequireRole("distributor"); err != nil {
+		return err
+	}
+	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+		return err
+	}
+	var reading struct {
+		TimestampStr string  `json:"timestamp"`
+		Temperature  float64 `json:"temperature"`
+	}
+	if err := json.Unmarshal([]byte(readingJSON), &reading); err != nil {
+		return fmt.Errorf("LogTemperatureReading: invalid readingJSON: %w", err)
+	}
+	ts, err := parseDateString(reading.TimestampStr, "reading.timestamp", true)
+	if err != nil {
+		return err
+	}
+
+	shipment, err := s.getShipmentByID(ctx, shipmentID)
+	if err != nil {
+		return fmt.Errorf("LogTemperatureReading: %w", err)
+	}
+	if shipment.DistributorData == nil || shipment.DistributorData.DistributorID != actor.fullID {
+		return fmt.Errorf("LogTemperatureReading: distributor not authorized for shipment")
+	}
+
+	breach := reading.Temperature < 0 || reading.Temperature > 4
+
+	shipment.DistributorData.TransitTemperatureLog = append(shipment.DistributorData.TransitTemperatureLog,
+		model.TemperatureReading{Timestamp: ts, Temperature: reading.Temperature})
+	if breach {
+		shipment.DistributorData.TemperatureBreaches++
+	}
+	now, err := s.getCurrentTxTimestamp(ctx)
+	if err == nil {
+		shipment.LastUpdatedAt = now
+	}
+	ensureShipmentSchemaCompliance(shipment)
+	shipmentKey, _ := s.createShipmentCompositeKey(ctx, shipmentID)
+	shipmentBytes, err := json.Marshal(shipment)
+	if err != nil {
+		return fmt.Errorf("LogTemperatureReading: marshal failed: %w", err)
+	}
+	if err := ctx.GetStub().PutState(shipmentKey, shipmentBytes); err != nil {
+		return fmt.Errorf("LogTemperatureReading: failed to update shipment: %w", err)
+	}
+	return nil
+}
