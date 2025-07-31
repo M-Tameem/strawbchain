@@ -24,6 +24,7 @@ const (
 	maxRecallReasonLength   = 512
 	defaultRecallQueryHours = 72 // Default time window (+/- hours) for related shipment query
 	maxArrayElements        = 50 // Arbitrary limit for arrays like QualityCertifications, TransitLocationLog
+	maxTimeToCoolMinutes    = 120
 )
 
 // FoodtraceSmartContract provides functions for managing food shipments.

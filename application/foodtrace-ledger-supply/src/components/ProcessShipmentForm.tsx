@@ -35,6 +35,7 @@ const ProcessShipmentForm: React.FC<ProcessShipmentFormProps> = ({
     processingLocation: '',
     processingLatitude: '',
     processingLongitude: '',
+    timeToCoolMinutes: '',
     qualityCertifications: '', // User will input as CSV, e.g., "Organic,Grade A"
     destinationDistributorId: '' // Alias of the distributor
   });
@@ -56,8 +57,9 @@ const ProcessShipmentForm: React.FC<ProcessShipmentFormProps> = ({
       expiryDate: expiry.toISOString().slice(0,10),
       processingLocation: 'Demo Facility',
       processingLatitude: '0',
-      processingLongitude: '0',
-      qualityCertifications: 'Organic,HACCP',
+    processingLongitude: '0',
+    timeToCoolMinutes: '45',
+    qualityCertifications: 'Organic,HACCP',
       destinationDistributorId: distributorAliases[0] || ''
     });
     toast({ title: 'Demo data loaded' });
@@ -100,6 +102,10 @@ const ProcessShipmentForm: React.FC<ProcessShipmentFormProps> = ({
       toast({ title: "Validation Error", description: "Processing coordinates are required.", variant: "destructive" });
       setLoading(false); return;
     }
+    if (!formData.timeToCoolMinutes) {
+      toast({ title: "Validation Error", description: "Time To Cool is required.", variant: "destructive" });
+      setLoading(false); return;
+    }
     // Optional: Validate destinationDistributorId if it becomes mandatory
     // if (!formData.destinationDistributorId.trim()) {
     //   toast({ title: "Validation Error", description: "Destination Distributor ID is required.", variant: "destructive" });
@@ -131,6 +137,7 @@ const ProcessShipmentForm: React.FC<ProcessShipmentFormProps> = ({
           latitude: parseFloat(formData.processingLatitude),
           longitude: parseFloat(formData.processingLongitude)
         },
+        timeToCoolMinutes: parseInt(formData.timeToCoolMinutes),
         qualityCertifications: qualityCertificationsArray,
         destinationDistributorId: formData.destinationDistributorId.trim()
       };
@@ -271,7 +278,19 @@ const ProcessShipmentForm: React.FC<ProcessShipmentFormProps> = ({
           />
         </div>
 
-          {/* New Fields to match test-server.js */}
+        <div>
+          <Label htmlFor="timeToCoolMinutes">Time To Cool (minutes) *</Label>
+          <Input
+            id="timeToCoolMinutes"
+            type="number"
+            value={formData.timeToCoolMinutes}
+            onChange={(e) => handleInputChange('timeToCoolMinutes', e.target.value)}
+            required
+            placeholder="e.g., 45"
+          />
+        </div>
+
+        {/* New Fields to match test-server.js */}
           <div>
             <Label htmlFor="qualityCertifications">Quality Certifications (Optional, comma-separated)</Label>
             <Textarea

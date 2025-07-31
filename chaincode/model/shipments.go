@@ -52,6 +52,9 @@ type FarmerData struct {
 	OrganicSince              time.Time `json:"organicSince"`
 	BufferZoneMeters          float64   `json:"bufferZoneMeters"`
 	DestinationProcessorID    string    `json:"destinationProcessorId"`
+	PestFreeConfirmation      bool      `json:"pestFreeConfirmation"`
+	PestsFound                []string  `json:"pestsFound"`
+	PestTreatmentActions      string    `json:"pestTreatmentActions"`
 }
 
 // ProcessorData holds information specific to the processing stage.
@@ -68,6 +71,7 @@ type ProcessorData struct {
 	ExpiryDate               time.Time `json:"expiryDate"`
 	QualityCertifications    []string  `json:"qualityCertifications"`
 	DestinationDistributorID string    `json:"destinationDistributorId"`
+	TimeToCoolMinutes        int       `json:"timeToCoolMinutes"`
 }
 
 // CertificationRecord holds information specific to an organic certification event.
@@ -82,20 +86,28 @@ type CertificationRecord struct {
 	CertifiedAt          time.Time           `json:"certifiedAt"`
 }
 
+// TemperatureReading represents one logged temperature measurement.
+type TemperatureReading struct {
+	Timestamp   time.Time `json:"timestamp"`
+	Temperature float64   `json:"temperature"`
+}
+
 // DistributorData holds information specific to the distribution stage.
 type DistributorData struct {
-	DistributorID         string     `json:"distributorId"`
-	DistributorAlias      string     `json:"distributorAlias"`
-	PickupDateTime        time.Time  `json:"pickupDateTime"`
-	DeliveryDateTime      time.Time  `json:"deliveryDateTime"`
-	DistributionLineID    string     `json:"distributionLineId"`
-	TemperatureRange      string     `json:"temperatureRange"`
-	StorageTemperature    float64    `json:"storageTemperature"`
-	TransitLocationLog    []string   `json:"transitLocationLog"`
-	TransitGPSLog         []GeoPoint `json:"transitGpsLog"`
-	TransportConditions   string     `json:"transportConditions"`
-	DistributionCenter    string     `json:"distributionCenter"`
-	DestinationRetailerID string     `json:"destinationRetailerId"`
+	DistributorID         string               `json:"distributorId"`
+	DistributorAlias      string               `json:"distributorAlias"`
+	PickupDateTime        time.Time            `json:"pickupDateTime"`
+	DeliveryDateTime      time.Time            `json:"deliveryDateTime"`
+	DistributionLineID    string               `json:"distributionLineId"`
+	TemperatureRange      string               `json:"temperatureRange"`
+	StorageTemperature    float64              `json:"storageTemperature"`
+	TransitLocationLog    []string             `json:"transitLocationLog"`
+	TransitGPSLog         []GeoPoint           `json:"transitGpsLog"`
+	TransportConditions   string               `json:"transportConditions"`
+	DistributionCenter    string               `json:"distributionCenter"`
+	DestinationRetailerID string               `json:"destinationRetailerId"`
+	TransitTemperatureLog []TemperatureReading `json:"transitTemperatureLog"`
+	TemperatureBreaches   int                  `json:"temperatureBreaches"`
 }
 
 // RetailerData holds information specific to the retail stage.

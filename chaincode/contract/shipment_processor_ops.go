@@ -83,6 +83,7 @@ func (s *FoodtraceSmartContract) ProcessShipment(ctx contractapi.TransactionCont
 		ExpiryDate:               pdArgs.ExpiryDate,
 		QualityCertifications:    pdArgs.QualityCertifications,
 		DestinationDistributorID: destDistFullID,
+		TimeToCoolMinutes:        pdArgs.TimeToCoolMinutes,
 	}
 	shipment.Status = model.StatusProcessed
 	shipment.CurrentOwnerID = actor.fullID

@@ -179,8 +179,11 @@ type ValidatedFarmerData struct { // To return parsed dates
 	BedType                   string `json:"bedType"`
 	IrrigationMethod          string `json:"irrigationMethod"`
 	OrganicSince              time.Time
-	BufferZoneMeters          float64 `json:"bufferZoneMeters"`
-	DestinationProcessorID    string  `json:"destinationProcessorId"`
+	BufferZoneMeters          float64  `json:"bufferZoneMeters"`
+	DestinationProcessorID    string   `json:"destinationProcessorId"`
+	PestFreeConfirmation      bool     `json:"pestFreeConfirmation"`
+	PestsFound                []string `json:"pestsFound"`
+	PestTreatmentActions      string   `json:"pestTreatmentActions"`
 }
 
 func (s *FoodtraceSmartContract) validateFarmerDataArgs(ctx contractapi.TransactionContextInterface, farmerDataJSON string) (*ValidatedFarmerData, error) {
@@ -199,6 +202,9 @@ func (s *FoodtraceSmartContract) validateFarmerDataArgs(ctx contractapi.Transact
 		OrganicSinceStr           string          `json:"organicSince"`
 		BufferZoneMeters          float64         `json:"bufferZoneMeters"`
 		DestinationProcessorID    string          `json:"destinationProcessorId"`
+		PestFreeConfirmation      bool            `json:"pestFreeConfirmation"`
+		PestsFound                []string        `json:"pestsFound"`
+		PestTreatmentActions      string          `json:"pestTreatmentActions"`
 	}
 	if err := json.Unmarshal([]byte(farmerDataJSON), &fdArg); err != nil {
 		return nil, fmt.Errorf("invalid farmerDataJSON: %w. Ensure the JSON structure and all required fields are correct", err)
@@ -256,7 +262,18 @@ func (s *FoodtraceSmartContract) validateFarmerDataArgs(ctx contractapi.Transact
 	}
 	if err := s.validateRequiredString(fdArg.DestinationProcessorID, "farmerData.destinationProcessorId", maxStringInputLength*2); err != nil {
 		return nil, err
-	} // Full IDs can be long
+	}
+	if !fdArg.PestFreeConfirmation && len(fdArg.PestsFound) == 0 {
+		return nil, fmt.Errorf("either pestFreeConfirmation must be true or pestsFound specified")
+	}
+	if err := s.validateStringArray(fdArg.PestsFound, "farmerData.pestsFound", maxArrayElements, maxStringInputLength); err != nil {
+		return nil, err
+	}
+	if len(fdArg.PestsFound) > 0 {
+		if err := s.validateRequiredString(fdArg.PestTreatmentActions, "farmerData.pestTreatmentActions", maxDescriptionLength); err != nil {
+			return nil, err
+		}
+	}
 
 	return &ValidatedFarmerData{
 		FarmerName:                fdArg.FarmerName,
@@ -273,6 +290,9 @@ func (s *FoodtraceSmartContract) validateFarmerDataArgs(ctx contractapi.Transact
 		OrganicSince:              organicSince,
 		BufferZoneMeters:          fdArg.BufferZoneMeters,
 		DestinationProcessorID:    fdArg.DestinationProcessorID,
+		PestFreeConfirmation:      fdArg.PestFreeConfirmation,
+		PestsFound:                fdArg.PestsFound,
+		PestTreatmentActions:      fdArg.PestTreatmentActions,
 	}, nil
 }
 
@@ -288,6 +308,7 @@ func (s *FoodtraceSmartContract) validateProcessorDataArgs(pdJSON string) (*mode
 		ExpiryDateStr            string          `json:"expiryDate"`
 		QualityCertifications    []string        `json:"qualityCertifications"`
 		DestinationDistributorID string          `json:"destinationDistributorId"`
+		TimeToCoolMinutes        int             `json:"timeToCoolMinutes"`
 	}
 	if err := json.Unmarshal([]byte(pdJSON), &pdArgRaw); err != nil {
 		return nil, fmt.Errorf("invalid processorDataJSON: %w", err)
@@ -325,12 +346,21 @@ func (s *FoodtraceSmartContract) validateProcessorDataArgs(pdJSON string) (*mode
 	if err := s.validateRequiredString(pdArgRaw.DestinationDistributorID, "processorData.destinationDistributorId", maxStringInputLength*2); err != nil {
 		return nil, err
 	}
+	if pdArgRaw.TimeToCoolMinutes <= 0 {
+		return nil, fmt.Errorf("processorData.timeToCoolMinutes must be positive")
+	}
+	if pdArgRaw.TimeToCoolMinutes > maxTimeToCoolMinutes {
+		return nil, fmt.Errorf("timeToCoolMinutes exceeds SLA of %d minutes", maxTimeToCoolMinutes)
+	}
 
 	return &model.ProcessorData{ // Return model.ProcessorData with parsed dates
 		DateProcessed: dateProcessed, ProcessingType: pdArgRaw.ProcessingType, ProcessingLineID: pdArgRaw.ProcessingLineID,
 		ProcessingLocation: pdArgRaw.ProcessingLocation, ProcessingCoordinates: pdArgRaw.ProcessingCoordinates,
 		ContaminationCheck: pdArgRaw.ContaminationCheck, OutputBatchID: pdArgRaw.OutputBatchID,
-		ExpiryDate: expiryDate, QualityCertifications: pdArgRaw.QualityCertifications, DestinationDistributorID: pdArgRaw.DestinationDistributorID,
+		ExpiryDate:               expiryDate,
+		QualityCertifications:    pdArgRaw.QualityCertifications,
+		DestinationDistributorID: pdArgRaw.DestinationDistributorID,
+		TimeToCoolMinutes:        pdArgRaw.TimeToCoolMinutes,
 	}, nil
 }
 
@@ -496,6 +526,9 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
 	if shipment.FarmerData == nil {
 		shipment.FarmerData = &model.FarmerData{}
 	}
+	if shipment.FarmerData.PestsFound == nil {
+		shipment.FarmerData.PestsFound = []string{}
+	}
 
 	// Initialize ProcessorData if nil and ensure nested slices are not nil
 	if shipment.ProcessorData == nil {
@@ -512,8 +545,9 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
 	// Initialize DistributorData if nil and ensure nested slices are not nil
 	if shipment.DistributorData == nil {
 		shipment.DistributorData = &model.DistributorData{
-			TransitLocationLog: []string{}, // FIXED: Initialize as empty slice
-			TransitGPSLog:      []model.GeoPoint{},
+			TransitLocationLog:    []string{},
+			TransitGPSLog:         []model.GeoPoint{},
+			TransitTemperatureLog: []model.TemperatureReading{},
 		}
 	} else {
 		// Ensure nested slice is not nil
@@ -522,6 +556,9 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
 		}
 		if shipment.DistributorData.TransitGPSLog == nil {
 			shipment.DistributorData.TransitGPSLog = []model.GeoPoint{}
+		}
+		if shipment.DistributorData.TransitTemperatureLog == nil {
+			shipment.DistributorData.TransitTemperatureLog = []model.TemperatureReading{}
 		}
 	}
 
