@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Apple, Leaf, TruckIcon, Building, ShieldCheck } from 'lucide-react';
+import { Leaf, TruckIcon, Building, ShieldCheck } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 
@@ -94,7 +94,7 @@ const Login = () => {
         <div className="text-center md:text-left space-y-6">
           <div className="flex items-center justify-center md:justify-start space-x-3">
             <div className="h-12 w-12 bg-gradient-to-r from-pink-500 to-rose-600 rounded-xl flex items-center justify-center">
-              <Apple className="h-7 w-7 text-white" />
+              <span className="text-white text-2xl" role="img" aria-label="strawberry">🍓</span>
             </div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-pink-600 to-rose-600 bg-clip-text text-transparent">
               StrawberryChain

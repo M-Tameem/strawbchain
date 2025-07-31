@@ -4,7 +4,6 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import {
-  Apple,
   Package,
   User,
   Settings,
@@ -69,7 +68,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <div className="flex items-center space-x-8">
               <Link to="/dashboard" className="flex items-center space-x-2">
                 <div className="h-8 w-8 bg-gradient-to-r from-pink-500 to-rose-600 rounded-lg flex items-center justify-center">
-                  <Apple className="h-5 w-5 text-white" />
+                  <span className="text-white text-lg" role="img" aria-label="strawberry">🍓</span>
                 </div>
                 <span className="text-xl font-bold bg-gradient-to-r from-pink-600 to-rose-600 bg-clip-text text-transparent">
                   StrawberryChain
