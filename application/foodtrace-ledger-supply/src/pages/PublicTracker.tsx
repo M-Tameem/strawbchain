@@ -130,18 +130,18 @@ const PublicTracker = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-blue-50 to-green-50">
+    <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-rose-100">
       {/* Header */}
-      <div className="bg-white/80 backdrop-blur-sm border-b border-emerald-200">
+      <div className="bg-white/80 backdrop-blur-sm border-b border-rose-200">
         <div className="max-w-6xl mx-auto px-4 py-6">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center space-x-3">
-              <div className="h-10 w-10 bg-gradient-to-r from-emerald-500 to-green-600 rounded-xl flex items-center justify-center">
+              <div className="h-10 w-10 bg-gradient-to-r from-pink-500 to-rose-600 rounded-xl flex items-center justify-center">
                 <QrCode className="h-6 w-6 text-white" />
               </div>
               <div>
-                <h1 className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-green-600 bg-clip-text text-transparent">
-                  Food Supply Chain Tracker
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-pink-600 to-rose-600 bg-clip-text text-transparent">
+                  StrawberryChain Tracker
                 </h1>
                 <p className="text-gray-600">Track your food's journey from farm to table</p>
               </div>
@@ -167,12 +167,12 @@ const PublicTracker = () => {
               value={shipmentId}
               onChange={(e) => setShipmentId(e.target.value)}
               onKeyPress={handleKeyPress}
-              className="border-emerald-200 focus:border-emerald-500"
+              className="border-pink-200 focus:border-pink-500"
             />
             <Button 
               onClick={handleSearch}
               disabled={loading}
-              className="bg-emerald-600 hover:bg-emerald-700"
+              className="bg-pink-600 hover:bg-rose-700"
             >
               {loading ? (
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
@@ -208,7 +208,7 @@ const PublicTracker = () => {
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 max-w-2xl mx-auto">
                 <div className="text-center">
-                  <Leaf className="h-8 w-8 mx-auto text-emerald-600 mb-2" />
+                  <Leaf className="h-8 w-8 mx-auto text-pink-600 mb-2" />
                   <span className="text-sm font-medium text-gray-700">Farm Origins</span>
                 </div>
                 <div className="text-center">
@@ -327,7 +327,7 @@ const PublicTracker = () => {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center space-x-2">
-                    <Leaf className="h-5 w-5 text-emerald-600" />
+                    <Leaf className="h-5 w-5 text-pink-600" />
                     <span>Farm Origins</span>
                   </CardTitle>
                 </CardHeader>
@@ -505,7 +505,7 @@ const PublicTracker = () => {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center space-x-2">
-                    <ShieldCheck className="h-5 w-5 text-green-600" />
+                    <ShieldCheck className="h-5 w-5 text-pink-600" />
                     <span>Certifications</span>
                   </CardTitle>
                 </CardHeader>
@@ -532,13 +532,13 @@ const PublicTracker = () => {
             )}
 
             {/* Blockchain Security Notice */}
-            <Card className="border-emerald-200 bg-emerald-50">
+            <Card className="border-rose-200 bg-rose-50">
               <CardContent className="pt-6">
                 <div className="flex items-center space-x-3">
-                  <ShieldCheck className="h-6 w-6 text-emerald-600" />
+                  <ShieldCheck className="h-6 w-6 text-pink-600" />
                   <div>
-                    <h3 className="font-medium text-emerald-900">Blockchain Verified</h3>
-                    <p className="text-sm text-emerald-700">
+                    <h3 className="font-medium text-rose-900">Blockchain Verified</h3>
+                    <p className="text-sm text-rose-700">
                       This information is secured and verified on the blockchain, ensuring authenticity and preventing tampering.
                     </p>
                   </div>
