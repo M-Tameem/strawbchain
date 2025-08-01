@@ -81,29 +81,29 @@ const CreateShipment = () => {
     };
 
     setFormData({
-      shipmentId: "", // Let it be auto-generated for demo
-      productName: "Premium Organic Test Apples",
+      shipmentId: "", // auto-generate for demo
+      productName: "Premium Organic Strawberries",
       description:
-        "Freshly harvested, ethically sourced organic apples for demonstration purposes. Grown with care.",
-      quantity: "125.5", // String, as it comes from input
+        "Freshly harvested, organically grown strawberries from raised beds. Cooled quickly for quality.",
+      quantity: "120.0", // as string from input
       unitOfMeasure: "kg",
-      farmerName: "Demo Apple Farms Co.",
-      farmLocation: "Green Valley, CA, USA",
-      farmLatitude: "37.0000",
-      farmLongitude: "-122.0000",
-      cropType: "Apples (Fuji)",
+      farmerName: "Demo Berry Farms Ltd.",
+      farmLocation: "Norfolk County, ON, Canada",
+      farmLatitude: "42.8339",
+      farmLongitude: "-80.3830",
+      cropType: "Strawberries (Albion)",
       plantingDate: formatDateForInput(planting),
       harvestDate: formatDateForInput(harvest),
-      fertilizerUsed: "Organic Compost Blend, Worm Castings",
+      fertilizerUsed: "Organic compost blend, kelp meal",
       farmingPractice: "Organic",
       bedType: "plastic mulch beds",
       irrigationMethod: "drip",
       organicSince: formatDateForInput(
-        new Date(today.getFullYear() - 4, today.getMonth(), today.getDate()),
+        new Date(today.getFullYear() - 3, today.getMonth(), today.getDate())
       ),
-      bufferZoneMeters: "10",
-      destinationProcessorId: "PROCESSOR_MAIN_HUB_01",
-      certificationDocumentHash: "demoDocHash_abc123xyz789_organicApples",
+      bufferZoneMeters: "25",
+      destinationProcessorId: "DemoProcessor1",
+      certificationDocumentHash: "demoDocHash_organicStrawberries_abc123",
     });
     toast({
       title: "Demo Data Loaded",
