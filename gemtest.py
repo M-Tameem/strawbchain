@@ -813,7 +813,7 @@ def main():
     # Distribute
     ddata_recall = {
         "pickupDateTime": get_current_utc_timestamp(), "deliveryDateTime": (datetime.datetime.now(timezone.utc) + datetime.timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "distributionLineId": "CITY-ROUTE-12", "temperatureRange": "8-12°C", "storageTemperature": 10.0,
+        "distributionLineId": "CITY-ROUTE-12", "temperatureRange": "8-12°C", "storageTemperatures": [10.0],
         "transitLocationLog": ["Bob's Plant -> City Hub"], "transportConditions": "Standard",
         "distributionCenter": "City Hub South", "destinationRetailerId": retailer_eve_alias,
     }

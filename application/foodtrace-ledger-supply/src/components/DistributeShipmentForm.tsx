@@ -31,7 +31,6 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
     deliveryDateTime: '',
     transportConditions: '',
     temperatureRange: '',
-    storageTemperature: '',
     distributionCenter: '',
     distributionLineId: '',
     transitLocationLog: '',
@@ -66,7 +65,6 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
       deliveryDateTime: delivery.toISOString().slice(0,16),
       transportConditions: 'Refrigerated',
       temperatureRange: '0-4°C',
-      storageTemperature: '2°C',
       distributionCenter: 'Demo DC',
       distributionLineId: 'TRUCK_DEMO_1',
       transitLocationLog: 'Warehouse A, Hub B',
@@ -115,11 +113,6 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
       const pickupDateTimeISO = new Date(formData.pickupDateTime).toISOString();
       const deliveryDateTimeISO = new Date(formData.deliveryDateTime).toISOString();
 
-      // Handle storage temperature conversion
-      const storageTemperatureValue = formData.storageTemperature.trim() 
-        ? parseFloat(formData.storageTemperature.trim()) 
-        : undefined;
-
       // Handle transit location log as array
       const transitLocationLogArray = formData.transitLocationLog.trim()
         ? formData.transitLocationLog.split(',').map(location => location.trim()).filter(location => location)
@@ -131,7 +124,7 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
         deliveryDateTime: deliveryDateTimeISO,
         transportConditions: formData.transportConditions.trim(),
         temperatureRange: formData.temperatureRange.trim(),
-        storageTemperature: storageTemperatureValue,
+        storageTemperatures: sensorLogs.map(log => log.temperature),
         distributionCenter: formData.distributionCenter.trim(),
         distributionLineId: formData.distributionLineId.trim(),
         transitLocationLog: transitLocationLogArray,
@@ -226,15 +219,16 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="storageTemperature">Storage Temperature (°C)</Label>
-              <Input
-                id="storageTemperature"
-                type="number"
-                step="0.1"
-                value={formData.storageTemperature}
-                onChange={(e) => handleInputChange('storageTemperature', e.target.value)}
-                placeholder="e.g., 4.5"
-              />
+              <Label>Recorded Temperatures (°C)</Label>
+              {sensorLogs.length > 0 ? (
+                <ul className="bg-gray-100 p-2 rounded text-sm max-h-40 overflow-y-auto">
+                  {sensorLogs.map((log, idx) => (
+                    <li key={idx}>{new Date(log.timestamp).toLocaleString()}: {log.temperature}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-gray-500">No sensor data</p>
+              )}
             </div>
             <div>
               <Label htmlFor="distributionLineId">Vehicle/Line ID *</Label>

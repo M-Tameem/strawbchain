@@ -567,7 +567,7 @@ def main():
         "deliveryDateTime": (datetime.datetime.now(timezone.utc) + datetime.timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "distributionLineId": "RouteNorth77",
         "temperatureRange": "1-4°C",
-        "storageTemperature": 2.5,
+        "storageTemperatures": [2.5],
         "transitLocationLog": ["Warehouse A -> Hub B", "Hub B -> Dispatch Center C"],
         "transportConditions": "Refrigerated, Handle With Care",
         "distributionCenter": "GTA Central Hub",

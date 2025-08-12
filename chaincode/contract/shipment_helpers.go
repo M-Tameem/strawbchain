@@ -150,6 +150,16 @@ func (s *FoodtraceSmartContract) validateGeoPointArray(gps []model.GeoPoint, fie
 	return nil
 }
 
+func (s *FoodtraceSmartContract) validateFloatArray(nums []float64, field string, maxItems int) error {
+        if nums == nil {
+                return nil
+        }
+        if len(nums) > maxItems {
+                return fmt.Errorf("%s has %d items, exceeding maximum of %d", field, len(nums), maxItems)
+        }
+        return nil
+}
+
 func parseDateString(str, field string, required bool) (time.Time, error) {
 	sTrimmed := strings.TrimSpace(str)
 	if sTrimmed == "" {
@@ -339,15 +349,15 @@ func (s *FoodtraceSmartContract) validateDistributorDataArgs(ddJSON string) (*mo
 	var ddArgRaw struct {
 		PickupDateTimeStr     string           `json:"pickupDateTime"`
 		DeliveryDateTimeStr   string           `json:"deliveryDateTime"`
-		DistributionLineID    string           `json:"distributionLineId"`
-		TemperatureRange      string           `json:"temperatureRange"`
-		StorageTemperature    *float64         `json:"storageTemperature"`
-		TransitLocationLog    []string         `json:"transitLocationLog"`
-		TransitGPSLog         []model.GeoPoint `json:"transitGpsLog"`
-		TransportConditions   string           `json:"transportConditions"`
-		DistributionCenter    string           `json:"distributionCenter"`
-		DestinationRetailerID string           `json:"destinationRetailerId"`
-	}
+                DistributionLineID    string           `json:"distributionLineId"`
+                TemperatureRange      string           `json:"temperatureRange"`
+                StorageTemperatures   []float64        `json:"storageTemperatures"`
+                TransitLocationLog    []string         `json:"transitLocationLog"`
+                TransitGPSLog         []model.GeoPoint `json:"transitGpsLog"`
+                TransportConditions   string           `json:"transportConditions"`
+                DistributionCenter    string           `json:"distributionCenter"`
+                DestinationRetailerID string           `json:"destinationRetailerId"`
+        }
 	if err := json.Unmarshal([]byte(ddJSON), &ddArgRaw); err != nil {
 		return nil, fmt.Errorf("invalid distributorDataJSON: %w", err)
 	}
@@ -368,15 +378,18 @@ func (s *FoodtraceSmartContract) validateDistributorDataArgs(ddJSON string) (*mo
 	if err := s.validateOptionalString(ddArgRaw.TemperatureRange, "distributorData.temperatureRange", maxStringInputLength); err != nil {
 		return nil, err
 	}
-	if err := s.validateStringArray(ddArgRaw.TransitLocationLog, "distributorData.transitLocationLog", maxArrayElements, maxDescriptionLength); err != nil {
-		return nil, err
-	}
-	if err := s.validateGeoPointArray(ddArgRaw.TransitGPSLog, "distributorData.transitGpsLog", maxArrayElements); err != nil {
-		return nil, err
-	}
-	if err := s.validateOptionalString(ddArgRaw.TransportConditions, "distributorData.transportConditions", maxDescriptionLength); err != nil {
-		return nil, err
-	}
+        if err := s.validateStringArray(ddArgRaw.TransitLocationLog, "distributorData.transitLocationLog", maxArrayElements, maxDescriptionLength); err != nil {
+                return nil, err
+        }
+        if err := s.validateGeoPointArray(ddArgRaw.TransitGPSLog, "distributorData.transitGpsLog", maxArrayElements); err != nil {
+                return nil, err
+        }
+        if err := s.validateFloatArray(ddArgRaw.StorageTemperatures, "distributorData.storageTemperatures", maxArrayElements); err != nil {
+                return nil, err
+        }
+        if err := s.validateOptionalString(ddArgRaw.TransportConditions, "distributorData.transportConditions", maxDescriptionLength); err != nil {
+                return nil, err
+        }
 	if err := s.validateRequiredString(ddArgRaw.DistributionCenter, "distributorData.distributionCenter", maxStringInputLength); err != nil {
 		return nil, err
 	}
@@ -384,23 +397,18 @@ func (s *FoodtraceSmartContract) validateDistributorDataArgs(ddJSON string) (*mo
 		return nil, err
 	}
 
-	var storageTempValue float64
-	if ddArgRaw.StorageTemperature != nil {
-		storageTempValue = *ddArgRaw.StorageTemperature
-	}
-
-	return &model.DistributorData{
-		PickupDateTime:        pickupDateTime,
-		DeliveryDateTime:      deliveryDateTime,
-		DistributionLineID:    ddArgRaw.DistributionLineID,
-		TemperatureRange:      ddArgRaw.TemperatureRange,
-		StorageTemperature:    storageTempValue,
-		TransitLocationLog:    ddArgRaw.TransitLocationLog,
-		TransitGPSLog:         ddArgRaw.TransitGPSLog,
-		TransportConditions:   ddArgRaw.TransportConditions,
-		DistributionCenter:    ddArgRaw.DistributionCenter,
-		DestinationRetailerID: ddArgRaw.DestinationRetailerID,
-	}, nil
+        return &model.DistributorData{
+                PickupDateTime:        pickupDateTime,
+                DeliveryDateTime:      deliveryDateTime,
+                DistributionLineID:    ddArgRaw.DistributionLineID,
+                TemperatureRange:      ddArgRaw.TemperatureRange,
+                StorageTemperatures:   ddArgRaw.StorageTemperatures,
+                TransitLocationLog:    ddArgRaw.TransitLocationLog,
+                TransitGPSLog:         ddArgRaw.TransitGPSLog,
+                TransportConditions:   ddArgRaw.TransportConditions,
+                DistributionCenter:    ddArgRaw.DistributionCenter,
+                DestinationRetailerID: ddArgRaw.DestinationRetailerID,
+        }, nil
 }
 
 // FIXED: Complete validation for retailer data
@@ -511,23 +519,27 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
 
 	// Initialize DistributorData if nil and ensure nested slices are not nil
 	if shipment.DistributorData == nil {
-		shipment.DistributorData = &model.DistributorData{
-			TransitLocationLog: []string{}, // FIXED: Initialize as empty slice
-			TransitGPSLog:      []model.GeoPoint{},
-			SensorLogs:         []model.ColdChainLog{},
-		}
-	} else {
-		// Ensure nested slice is not nil
-		if shipment.DistributorData.TransitLocationLog == nil {
-			shipment.DistributorData.TransitLocationLog = []string{}
-		}
-		if shipment.DistributorData.TransitGPSLog == nil {
-			shipment.DistributorData.TransitGPSLog = []model.GeoPoint{}
-		}
-		if shipment.DistributorData.SensorLogs == nil {
-			shipment.DistributorData.SensorLogs = []model.ColdChainLog{}
-		}
-	}
+                shipment.DistributorData = &model.DistributorData{
+                        TransitLocationLog:  []string{}, // FIXED: Initialize as empty slice
+                        TransitGPSLog:       []model.GeoPoint{},
+                        SensorLogs:          []model.ColdChainLog{},
+                        StorageTemperatures: []float64{},
+                }
+        } else {
+                // Ensure nested slice is not nil
+                if shipment.DistributorData.TransitLocationLog == nil {
+                        shipment.DistributorData.TransitLocationLog = []string{}
+                }
+                if shipment.DistributorData.TransitGPSLog == nil {
+                        shipment.DistributorData.TransitGPSLog = []model.GeoPoint{}
+                }
+                if shipment.DistributorData.SensorLogs == nil {
+                        shipment.DistributorData.SensorLogs = []model.ColdChainLog{}
+                }
+                if shipment.DistributorData.StorageTemperatures == nil {
+                        shipment.DistributorData.StorageTemperatures = []float64{}
+                }
+        }
 
 	// Initialize RetailerData if nil
 	if shipment.RetailerData == nil {

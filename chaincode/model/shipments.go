@@ -96,14 +96,14 @@ type DistributorData struct {
 	DistributorAlias      string         `json:"distributorAlias"`
 	PickupDateTime        time.Time      `json:"pickupDateTime"`
 	DeliveryDateTime      time.Time      `json:"deliveryDateTime"`
-	DistributionLineID    string         `json:"distributionLineId"`
-	TemperatureRange      string         `json:"temperatureRange"`
-	StorageTemperature    float64        `json:"storageTemperature"`
-	TransitLocationLog    []string       `json:"transitLocationLog"`
-	TransitGPSLog         []GeoPoint     `json:"transitGpsLog"`
-	SensorLogs            []ColdChainLog `json:"sensorLogs"`
-	TransportConditions   string         `json:"transportConditions"`
-	DistributionCenter    string         `json:"distributionCenter"`
+        DistributionLineID    string         `json:"distributionLineId"`
+        TemperatureRange      string         `json:"temperatureRange"`
+        StorageTemperatures   []float64     `json:"storageTemperatures"`
+        TransitLocationLog    []string       `json:"transitLocationLog"`
+        TransitGPSLog         []GeoPoint     `json:"transitGpsLog"`
+        SensorLogs            []ColdChainLog `json:"sensorLogs"`
+        TransportConditions   string         `json:"transportConditions"`
+        DistributionCenter    string         `json:"distributionCenter"`
 	DestinationRetailerID string         `json:"destinationRetailerId"`
 }
 

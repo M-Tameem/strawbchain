@@ -51,15 +51,15 @@ func (s *FoodtraceSmartContract) DistributeShipment(ctx contractapi.TransactionC
 		DistributorAlias:      actor.alias,
 		PickupDateTime:        ddArgs.PickupDateTime,
 		DeliveryDateTime:      ddArgs.DeliveryDateTime,
-		DistributionLineID:    ddArgs.DistributionLineID,
-		TemperatureRange:      ddArgs.TemperatureRange,
-		StorageTemperature:    ddArgs.StorageTemperature,
-		TransitLocationLog:    ddArgs.TransitLocationLog,
-		TransitGPSLog:         ddArgs.TransitGPSLog,
-		TransportConditions:   ddArgs.TransportConditions,
-		DistributionCenter:    ddArgs.DistributionCenter,
-		DestinationRetailerID: destRetFullID,
-	}
+                DistributionLineID:    ddArgs.DistributionLineID,
+                TemperatureRange:      ddArgs.TemperatureRange,
+                StorageTemperatures:   ddArgs.StorageTemperatures,
+                TransitLocationLog:    ddArgs.TransitLocationLog,
+                TransitGPSLog:         ddArgs.TransitGPSLog,
+                TransportConditions:   ddArgs.TransportConditions,
+                DistributionCenter:    ddArgs.DistributionCenter,
+                DestinationRetailerID: destRetFullID,
+        }
 	shipment.Status = model.StatusDistributed
 	shipment.CurrentOwnerID = actor.fullID
 	shipment.CurrentOwnerAlias = actor.alias
