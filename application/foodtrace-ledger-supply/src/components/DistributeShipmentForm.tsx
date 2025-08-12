@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,6 +25,7 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
   const { toast } = useToast();
   const retailerAliases = useAliases('retailer');
   const [loading, setLoading] = useState(false);
+  const [sensorLogs, setSensorLogs] = useState<{ timestamp: string; temperature: number; humidity: number; coordinates: GeoPoint; }[]>([]);
   const [formData, setFormData] = useState({
     pickupDateTime: '',
     deliveryDateTime: '',
@@ -41,6 +42,21 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
   const handleInputChange = (field: keyof typeof formData, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const logs = await apiClient.getSensorLogs(shipmentId);
+        if (Array.isArray(logs)) {
+          setSensorLogs(logs);
+          setFormData(prev => ({ ...prev, transitGpsLog: logs.map((l: any) => l.coordinates) }));
+        }
+      } catch (err) {
+        console.error('Failed to load sensor logs', err);
+      }
+    };
+    fetchLogs();
+  }, [shipmentId]);
 
   const fillWithDemoData = () => {
     const now = new Date();
@@ -253,11 +269,18 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
               rows={2}
             />
           </div>
+          {sensorLogs.length > 0 && (
+            <div className="md:col-span-2">
+              <Label>Sensor Logs</Label>
+              <pre className="bg-gray-100 p-2 rounded text-xs overflow-x-auto">{JSON.stringify(sensorLogs, null, 2)}</pre>
+            </div>
+          )}
           <div className="md:col-span-2 space-y-2">
-            <Label>Transit GPS Log (click map to add points)</Label>
+            <Label>Transit GPS Log {sensorLogs.length > 0 ? '(auto-filled from sensors)' : '(click map to add points)'}</Label>
             <RouteMapInput
               points={formData.transitGpsLog}
               onChange={(pts) => handleInputChange('transitGpsLog', pts)}
+              readOnly={sensorLogs.length > 0}
             />
           </div>
 

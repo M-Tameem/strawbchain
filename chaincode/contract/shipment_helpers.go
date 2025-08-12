@@ -514,6 +514,7 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
 		shipment.DistributorData = &model.DistributorData{
 			TransitLocationLog: []string{}, // FIXED: Initialize as empty slice
 			TransitGPSLog:      []model.GeoPoint{},
+			SensorLogs:         []model.ColdChainLog{},
 		}
 	} else {
 		// Ensure nested slice is not nil
@@ -522,6 +523,9 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
 		}
 		if shipment.DistributorData.TransitGPSLog == nil {
 			shipment.DistributorData.TransitGPSLog = []model.GeoPoint{}
+		}
+		if shipment.DistributorData.SensorLogs == nil {
+			shipment.DistributorData.SensorLogs = []model.ColdChainLog{}
 		}
 	}
 

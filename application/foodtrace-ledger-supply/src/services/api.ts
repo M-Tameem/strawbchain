@@ -131,6 +131,10 @@ class ApiClient {
     });
   }
 
+  async getSensorLogs(shipmentId: string) {
+    return this.request<any>(`/api/shipments/${encodeURIComponent(shipmentId)}/sensor-logs`);
+  }
+
   async receiveShipment(shipmentId: string, retailerData: any) {
     return this.request<any>(`/api/shipments/${encodeURIComponent(shipmentId)}/receive`, {
       method: 'POST',

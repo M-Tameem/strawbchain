@@ -839,6 +839,49 @@ app.post('/api/shipments/:id/distribute', authenticateToken, requireRole(['distr
   }
 });
 
+// IoT sensor endpoint to record cold chain data
+app.post('/api/shipments/:id/sensor-logs', async (req, res) => {
+  try {
+    const { kidName, temperature, humidity, latitude, longitude, timestamp } = req.body;
+    if (!kidName) {
+      return res.status(400).json({ error: 'kidName is required' });
+    }
+    const logPayload = {
+      temperature,
+      humidity,
+      coordinates: { latitude, longitude },
+      timestamp: timestamp || new Date().toISOString(),
+    };
+    const result = await invokeChaincode(kidName, 'AddDistributorSensorLog', [
+      req.params.id,
+      JSON.stringify(logPayload),
+    ]);
+    if (isCallSuccessful(result)) {
+      res.json({ message: 'Sensor log recorded' });
+    } else {
+      res.status(500).json({ error: 'Failed to record sensor log', details: result });
+    }
+  } catch (error) {
+    console.error('Sensor log error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Retrieve sensor logs for a shipment
+app.get('/api/shipments/:id/sensor-logs', authenticateToken, requireRole(['distributor']), async (req, res) => {
+  try {
+    const result = await queryChaincode(req.user.kid_name, 'GetDistributorSensorLogs', [req.params.id]);
+    if (result.success) {
+      res.json(result.data || []);
+    } else {
+      res.status(500).json({ error: 'Failed to fetch sensor logs', details: result.error });
+    }
+  } catch (error) {
+    console.error('Get sensor logs error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.post('/api/shipments/:id/receive', authenticateToken, requireRole(['retailer']), async (req, res) => {
   try {
     const { retailerData } = req.body;

@@ -33,6 +33,14 @@ type GeoPoint struct {
 	Longitude float64 `json:"longitude"`
 }
 
+// ColdChainLog represents a single immutable sensor reading during distribution.
+type ColdChainLog struct {
+	Timestamp   time.Time `json:"timestamp"`
+	Temperature float64   `json:"temperature"`
+	Humidity    float64   `json:"humidity"`
+	Coordinates GeoPoint  `json:"coordinates"`
+}
+
 // FarmerData holds information specific to the farming stage.
 type FarmerData struct {
 	FarmerID                  string    `json:"farmerId"`
@@ -84,18 +92,19 @@ type CertificationRecord struct {
 
 // DistributorData holds information specific to the distribution stage.
 type DistributorData struct {
-	DistributorID         string     `json:"distributorId"`
-	DistributorAlias      string     `json:"distributorAlias"`
-	PickupDateTime        time.Time  `json:"pickupDateTime"`
-	DeliveryDateTime      time.Time  `json:"deliveryDateTime"`
-	DistributionLineID    string     `json:"distributionLineId"`
-	TemperatureRange      string     `json:"temperatureRange"`
-	StorageTemperature    float64    `json:"storageTemperature"`
-	TransitLocationLog    []string   `json:"transitLocationLog"`
-	TransitGPSLog         []GeoPoint `json:"transitGpsLog"`
-	TransportConditions   string     `json:"transportConditions"`
-	DistributionCenter    string     `json:"distributionCenter"`
-	DestinationRetailerID string     `json:"destinationRetailerId"`
+	DistributorID         string         `json:"distributorId"`
+	DistributorAlias      string         `json:"distributorAlias"`
+	PickupDateTime        time.Time      `json:"pickupDateTime"`
+	DeliveryDateTime      time.Time      `json:"deliveryDateTime"`
+	DistributionLineID    string         `json:"distributionLineId"`
+	TemperatureRange      string         `json:"temperatureRange"`
+	StorageTemperature    float64        `json:"storageTemperature"`
+	TransitLocationLog    []string       `json:"transitLocationLog"`
+	TransitGPSLog         []GeoPoint     `json:"transitGpsLog"`
+	SensorLogs            []ColdChainLog `json:"sensorLogs"`
+	TransportConditions   string         `json:"transportConditions"`
+	DistributionCenter    string         `json:"distributionCenter"`
+	DestinationRetailerID string         `json:"destinationRetailerId"`
 }
 
 // RetailerData holds information specific to the retail stage.

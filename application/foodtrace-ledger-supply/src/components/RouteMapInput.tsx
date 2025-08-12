@@ -13,6 +13,7 @@ export interface GeoPoint {
 interface RouteMapInputProps {
   points: GeoPoint[];
   onChange: (pts: GeoPoint[]) => void;
+  readOnly?: boolean;
 }
 
 const MapEvents: React.FC<{ onAdd: (p: GeoPoint) => void }> = ({ onAdd }) => {
@@ -24,16 +25,16 @@ const MapEvents: React.FC<{ onAdd: (p: GeoPoint) => void }> = ({ onAdd }) => {
   return null;
 };
 
-const RouteMapInput: React.FC<RouteMapInputProps> = ({ points, onChange }) => {
+const RouteMapInput: React.FC<RouteMapInputProps> = ({ points, onChange, readOnly = false }) => {
   const coords = points.map(p => [p.latitude, p.longitude]) as [number, number][];
   const center: [number, number] = coords[0] || [0, 0];
   const handleAdd = (p: GeoPoint) => {
-    onChange([...points, p]);
+    if (!readOnly) onChange([...points, p]);
   };
   return (
-    <MapContainer center={center} zoom={5} style={{ height: '300px', width: '100%' }}>
+    <MapContainer center={center} zoom={5} style={{ height: '300px', width: '100%', pointerEvents: readOnly ? 'none' : 'auto' }}>
       <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
-      <MapEvents onAdd={handleAdd} />
+      {!readOnly && <MapEvents onAdd={handleAdd} />}
       {coords.map((c, i) => (
         <Marker key={i} position={c} />
       ))}
