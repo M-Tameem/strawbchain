@@ -7,38 +7,55 @@
  *
  * Environment variables:
  *   TEST_SERVER_URL - base URL of running server (default http://localhost:3001)
- *   SENSOR_KID - kidName/alias for invoking chaincode (optional if distributor credentials provided)
- *   DISTRIBUTOR_USERNAME - distributor login to derive kidName / fetch logs (optional)
- *   DISTRIBUTOR_PASSWORD - distributor password to derive kidName / fetch logs (optional)
+ *   SENSOR_KID - kidName/alias for invoking chaincode (optional; auto-derived from DB if absent)
+ *   JWT_SECRET - used to generate auth token for fetching logs
  */
 
 const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
+const jwt = require('jsonwebtoken');
+const path = require('path');
 require('dotenv').config();
 
 const SERVER_URL = process.env.TEST_SERVER_URL || 'http://localhost:3001';
 const SHIPMENT_ID = process.argv[2] || process.env.TEST_SHIPMENT_ID || 'SHIPMENT_ID';
 let SENSOR_KID = process.env.SENSOR_KID;
-const DISTRIBUTOR_USERNAME = process.env.DISTRIBUTOR_USERNAME;
-const DISTRIBUTOR_PASSWORD = process.env.DISTRIBUTOR_PASSWORD;
 let authToken;
+
+async function loadDistributor() {
+  return new Promise((resolve, reject) => {
+    const dbPath = path.join(__dirname, 'foodtrace.db');
+    const db = new sqlite3.Database(dbPath);
+    db.get('SELECT * FROM users WHERE role = ?', ['distributor'], (err, row) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
 
 async function ensureAuth() {
   if (SENSOR_KID && authToken) return;
-  if (DISTRIBUTOR_USERNAME && DISTRIBUTOR_PASSWORD) {
-    const loginRes = await axios.post(`${SERVER_URL}/api/auth/login`, {
-      username: DISTRIBUTOR_USERNAME,
-      password: DISTRIBUTOR_PASSWORD,
-    });
-    authToken = loginRes.data.token;
-    if (!SENSOR_KID) {
-      SENSOR_KID = loginRes.data.user.kid_name;
-      console.log('Using kidName from login:', SENSOR_KID);
-    }
-    return;
-  }
-  if (!SENSOR_KID) {
-    console.error('Provide SENSOR_KID or DISTRIBUTOR_USERNAME and DISTRIBUTOR_PASSWORD');
+  const user = await loadDistributor();
+  if (!user) {
+    console.error('No distributor user found in database');
     process.exit(1);
+  }
+  SENSOR_KID = SENSOR_KID || user.kid_name;
+  console.log('Using kidName from DB:', SENSOR_KID);
+
+  if (process.env.JWT_SECRET) {
+    const payload = {
+      id: user.id,
+      username: user.username,
+      kid_name: user.kid_name,
+      chaincode_alias: user.chaincode_alias,
+      role: user.role,
+      is_admin: !!user.is_admin,
+    };
+    authToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '24h' });
+  } else {
+    console.warn('JWT_SECRET not set, unable to generate auth token for GET test');
   }
 }
 
@@ -59,11 +76,11 @@ async function submitSensorLog() {
 }
 
 async function fetchSensorLogs() {
-  if (!DISTRIBUTOR_USERNAME || !DISTRIBUTOR_PASSWORD) {
-    console.log('DISTRIBUTOR_USERNAME or DISTRIBUTOR_PASSWORD not set, skipping GET test');
+  await ensureAuth();
+  if (!authToken) {
+    console.log('No auth token available, skipping GET test');
     return;
   }
-  await ensureAuth();
   const getRes = await axios.get(`${SERVER_URL}/api/shipments/${SHIPMENT_ID}/sensor-logs`, {
     headers: { Authorization: `Bearer ${authToken}` },
   });

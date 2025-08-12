@@ -842,16 +842,47 @@ app.post('/api/shipments/:id/distribute', authenticateToken, requireRole(['distr
 // IoT sensor endpoint to record cold chain data
 app.post('/api/shipments/:id/sensor-logs', async (req, res) => {
   try {
-    const { kidName, temperature, humidity, latitude, longitude, timestamp } = req.body;
+    let { kidName, username, password, temperature, humidity, latitude, longitude, timestamp } = req.body;
+
     if (!kidName) {
-      return res.status(400).json({ error: 'kidName is required' });
+      // Try bearer token first
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith('Bearer ')) {
+        try {
+          const decoded = jwt.verify(authHeader.slice(7), process.env.JWT_SECRET);
+          kidName = decoded.kid_name;
+        } catch (err) {
+          // ignore token errors and continue
+        }
+      }
+
+      // Fallback to username/password lookup
+      if (!kidName && username && password) {
+        const user = await new Promise((resolve, reject) => {
+          db.get('SELECT * FROM users WHERE username = ?', [username], (err, row) => {
+            if (err) reject(err);
+            else resolve(row);
+          });
+        });
+
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+          return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        kidName = user.kid_name;
+      }
+
+      if (!kidName) {
+        return res.status(400).json({ error: 'kidName or valid credentials required' });
+      }
     }
+
     const logPayload = {
       temperature,
       humidity,
       coordinates: { latitude, longitude },
       timestamp: timestamp || new Date().toISOString(),
     };
+
     const result = await invokeChaincode(kidName, 'AddDistributorSensorLog', [
       req.params.id,
       JSON.stringify(logPayload),
