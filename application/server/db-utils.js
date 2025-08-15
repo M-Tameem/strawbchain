@@ -2,7 +2,6 @@
 // Last updated: Aug 15, 2025
 // Last modified by: Muhammad-Tameem Mughal
 
-#!/usr/bin/env node
 /**
  * Database utility functions for Foodtrace BFF Server
  */

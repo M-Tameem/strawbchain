@@ -30,6 +30,6 @@ Typical flow of a shipment:
 5. Retailer receives the shipment and can optionally mark it as sold/consumed.
 6. At any point an admin may initiate a recall which propagates to all related shipments.
 
-The `shipment_routes_diagrams.md` file contains several Mermaid diagrams that visualize these flows.
+For build and testing, run `go vet` and `go build` under `chaincode/`. For the Node projects run `npm install` followed by `npm run build` (frontend) or `npm build` - for the server, please use node start.js to run locally.
 
-For build and testing, run `go vet` and `go build` under `chaincode/`. For the Node projects run `npm install` followed by `npm run build` (frontend) or `npm build` (server, no build script is defined).
+For running, please ensure a .env file is placed in the 'application/server' directory, please see env-example.txt

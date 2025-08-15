@@ -1,0 +1,8 @@
+Author: Muhammad-Tameem Mughal
+Last updated: Aug 15, 2025
+Last modified by: Muhammad-Tameem Mughal
+
+To compile for Kaleido, please run: 
+GOOS=linux GOARCH=amd64 go build -o foodtrace.bin
+
+foodtrace.bin can be replaced by any end binary file you wish, it does not affect anything in production.

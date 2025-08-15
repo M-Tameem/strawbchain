@@ -2,7 +2,6 @@
 // Last updated: Aug 15, 2025
 // Last modified by: Muhammad-Tameem Mughal
 
-#!/usr/bin/env node
 /**
  * Bootstrap script for Foodtrace system
  * Sets up the initial admin user and bootstraps the chaincode

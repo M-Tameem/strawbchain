@@ -2,7 +2,6 @@
 // Last updated: Aug 15, 2025
 // Last modified by: Muhammad-Tameem Mughal
 
-#!/usr/bin/env node
 /**
  * Smart startup script for Foodtrace BFF Server
  * Checks if bootstrap is needed and runs it automatically
