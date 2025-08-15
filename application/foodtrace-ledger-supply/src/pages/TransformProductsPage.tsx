@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 import React, { useEffect, useState } from 'react';
 import Layout from '@/components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';

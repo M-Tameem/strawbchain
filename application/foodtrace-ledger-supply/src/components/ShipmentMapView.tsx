@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 import React from 'react';
 import { MapContainer, TileLayer, CircleMarker, Polyline } from 'react-leaflet';
 import L from 'leaflet';

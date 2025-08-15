@@ -1,3 +1,7 @@
+# Author: Muhammad-Tameem Mughal
+# Last updated: Aug 15, 2025
+# Last modified by: Muhammad-Tameem Mughal
+
 #!/usr/bin/env python3
 """
 Foodtrace – FOCUSED FUNCTIONAL TEST
