@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 import React, { useRef, useState } from 'react';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';

@@ -1,3 +1,7 @@
+Author: Muhammad-Tameem Mughal
+Last updated: Aug 15, 2025
+Last modified by: Muhammad-Tameem Mughal
+
 # Full System Technical Reference
 
 This document dives into every component of the FoodTrace platform in detail. It is intended for engineers who need to understand how the pieces fit together.

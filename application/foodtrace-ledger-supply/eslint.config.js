@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 import js from "@eslint/js";
 import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";

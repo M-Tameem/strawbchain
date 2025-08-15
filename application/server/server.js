@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');

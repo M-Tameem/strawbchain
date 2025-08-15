@@ -1,3 +1,7 @@
+Author: Muhammad-Tameem Mughal
+Last updated: Aug 15, 2025
+Last modified by: Muhammad-Tameem Mughal
+
 # FoodTrace Blockchain Overview
 
 This repository implements an end-to-end food supply chain tracing system built on Hyperledger Fabric. The solution is composed of three major parts:

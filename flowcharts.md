@@ -1,3 +1,7 @@
+Author: Muhammad-Tameem Mughal
+Last updated: Aug 15, 2025
+Last modified by: Muhammad-Tameem Mughal
+
 I'll create comprehensive Mermaid visualizations for the FoodTrace supply chain system. Let me break this down into multiple logical flowcharts that clearly differentiate between frontend, server, and chaincode layers.
 
 ## 1. System Architecture Overview

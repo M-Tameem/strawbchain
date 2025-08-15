@@ -1,3 +1,7 @@
+Author: Muhammad-Tameem Mughal
+Last updated: Aug 15, 2025
+Last modified by: Muhammad-Tameem Mughal
+
 This is the official spec of the application:
 Structural considerations in Hyperledger Fabric
 These foundational components support the entire system:

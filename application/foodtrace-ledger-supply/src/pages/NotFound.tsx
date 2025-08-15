@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 import { useLocation } from "react-router-dom";
 import { useEffect } from "react";
 
