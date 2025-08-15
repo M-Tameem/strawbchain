@@ -1,4 +1,7 @@
-#!/usr/bin/env node
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 /**
  * Import existing admin from Python script setup
  * This connects to the existing admin identity created by your Python script
@@ -15,7 +18,7 @@ const KALEIDO_CONFIG = {
   appCred: process.env.KALEIDO_APP_CRED,
   identityServiceHostname: process.env.KALEIDO_IDENTITY_SERVICE_HOSTNAME,
   channelName: process.env.KALEIDO_CHANNEL_NAME || 'default-channel',
-  chaincodeName: process.env.KALEIDO_CHAINCODE_NAME || 'banana'
+  chaincodeName: process.env.KALEIDO_CHAINCODE_NAME
 };
 
 const KALEIDO_URLS = {
@@ -26,8 +29,8 @@ const KALEIDO_URLS = {
 const PYTHON_ADMIN = {
   username: 'admin',
   password: 'admin123', // You can change this
-  kid_name: 'admin_main_tester', // From Python script ID_ROSTER
-  chaincode_alias: 'MainAdminFT' // From Python script ID_ROSTER
+  kid_name: 'admin_main_tester',
+  chaincode_alias: 'MainAdminFT' 
 };
 
 function makeKaleidoRequest(url, payload = null, method = 'POST') {

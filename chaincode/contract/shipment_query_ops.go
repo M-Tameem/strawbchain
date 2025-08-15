@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 package contract
 
 import (
@@ -43,7 +47,6 @@ func (s *FoodtraceSmartContract) getShipmentByID(ctx contractapi.TransactionCont
 	return &shipment, nil
 }
 
-// Fix for GetShipmentPublicDetails in shipment_query_ops.go
 func (s *FoodtraceSmartContract) GetShipmentPublicDetails(ctx contractapi.TransactionContextInterface, shipmentID string) (*model.Shipment, error) {
 	logger.Debugf("GetShipmentPublicDetails: Querying details for shipment '%s'", shipmentID)
 	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
@@ -180,7 +183,6 @@ func (s *FoodtraceSmartContract) GetMyShipments(ctx contractapi.TransactionConte
 	}
 	defer resultsIterator.Close()
 
-	// FIXED: Initialize as empty slice, not nil
 	shipmentsFromQuery := []*model.Shipment{}
 	var fetchedCountCouchDB int32 = 0
 
@@ -197,7 +199,7 @@ func (s *FoodtraceSmartContract) GetMyShipments(ctx contractapi.TransactionConte
 		}
 		ensureShipmentSchemaCompliance(&ship)
 		s.enrichShipmentAliases(im, &ship)
-		ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+		ship.History = []model.HistoryEntry{}
 		shipmentsFromQuery = append(shipmentsFromQuery, &ship)
 		fetchedCountCouchDB++
 	}
@@ -228,7 +230,6 @@ func (s *FoodtraceSmartContract) GetAllShipments(ctx contractapi.TransactionCont
 	}
 	defer resultsIterator.Close()
 
-	// FIXED: Initialize as empty slice, not nil
 	shipments := []*model.Shipment{}
 	fetchedCount := int32(0)
 
@@ -246,7 +247,7 @@ func (s *FoodtraceSmartContract) GetAllShipments(ctx contractapi.TransactionCont
 		if !ship.IsArchived {
 			ensureShipmentSchemaCompliance(&ship)
 			s.enrichShipmentAliases(im, &ship)
-			ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+			ship.History = []model.HistoryEntry{}
 			shipments = append(shipments, &ship)
 			fetchedCount++
 		}
@@ -291,7 +292,6 @@ func (s *FoodtraceSmartContract) GetShipmentsByStatus(ctx contractapi.Transactio
 	}
 
 	im := NewIdentityManager(ctx)
-	// NOTE: Authorization removed per previous discussion - now open access
 
 	pageSize, err := strconv.ParseInt(pageSizeStr, 10, 32)
 	if err != nil || pageSize <= 0 {
@@ -308,7 +308,6 @@ func (s *FoodtraceSmartContract) GetShipmentsByStatus(ctx contractapi.Transactio
 	}
 	defer resultsIterator.Close()
 
-	// FIXED: Initialize as empty slice, not nil
 	shipmentsFromQuery := []*model.Shipment{}
 	fetchedCountCouchDB := int32(0)
 
@@ -338,7 +337,6 @@ func (s *FoodtraceSmartContract) GetShipmentsByStatus(ctx contractapi.Transactio
 	}, nil
 }
 
-// Fix for QueryRelatedShipments in shipment_query_ops.go
 func (s *FoodtraceSmartContract) QueryRelatedShipments(ctx contractapi.TransactionContextInterface, recalledShipmentID string, timeWindowHoursStr string) ([]model.RelatedShipmentInfo, error) {
 	im := NewIdentityManager(ctx)
 	if err := s.requireAdmin(ctx, im); err != nil {
@@ -362,7 +360,6 @@ func (s *FoodtraceSmartContract) QueryRelatedShipments(ctx contractapi.Transacti
 		return nil, fmt.Errorf("QueryRelatedShipments: recalled shipment '%s' not found: %w", recalledShipmentID, err)
 	}
 
-	// FIXED: Initialize as empty slice, not nil
 	relatedShipments := []model.RelatedShipmentInfo{}
 
 	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey(shipmentObjectType, []string{})
@@ -466,9 +463,7 @@ func (s *FoodtraceSmartContract) QueryRelatedShipments(ctx contractapi.Transacti
 	return relatedShipments, nil // Will be [] if empty, not null
 }
 
-// Fix for processShipmentIterator in shipment_query_ops.go
 func (s *FoodtraceSmartContract) processShipmentIterator(ctx contractapi.TransactionContextInterface, iterator shim.StateQueryIteratorInterface, enrichAliases bool) ([]*model.Shipment, error) {
-	// FIXED: Initialize as empty slice, not nil
 	shipments := []*model.Shipment{}
 	im := NewIdentityManager(ctx)
 
@@ -492,7 +487,6 @@ func (s *FoodtraceSmartContract) processShipmentIterator(ctx contractapi.Transac
 	return shipments, nil // Will be [] if empty, not null
 }
 
-// Fix for GetMyActionableShipments (from earlier artifact)
 func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.TransactionContextInterface, pageSizeStr string, bookmark string) (*model.PaginatedShipmentResponse, error) {
 	actor, err := s.getCurrentActorInfo(ctx)
 	if err != nil {
@@ -501,7 +495,6 @@ func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.Transa
 
 	im := NewIdentityManager(ctx)
 	isCallerAdmin, _ := im.IsCurrentUserAdmin()
-	// FIXED: Initialize as empty slice, not nil
 	userRoles := []string{}
 
 	if !isCallerAdmin {
@@ -529,7 +522,6 @@ func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.Transa
 	}
 	defer resultsIterator.Close()
 
-	// FIXED: Initialize as empty slice, not nil
 	actionableShipments := []*model.Shipment{}
 	fetchedCount := int32(0)
 	totalScanned := 0
@@ -556,7 +548,7 @@ func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.Transa
 		if canAct {
 			ensureShipmentSchemaCompliance(&ship)
 			s.enrichShipmentAliases(im, &ship)
-			ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
+			ship.History = []model.HistoryEntry{}
 
 			actionableShipments = append(actionableShipments, &ship)
 			fetchedCount++

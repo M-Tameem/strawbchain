@@ -24,9 +24,6 @@ Thumbs.db
 # Bun lock file
 **/bun.lockb
 
-# Lock files (can keep `package-lock.json` if you want strict versioning)
-**/package-lock.json
-
 # Local environment variables
 .env
 .env.*

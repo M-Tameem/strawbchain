@@ -1,10 +1,14 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 package contract
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"foodtrace/model" // Assuming model is in a direct subdirectory: foodtrace/model/
+	"foodtrace/model"
 	"strings"
 	"time"
 
@@ -110,11 +114,8 @@ func (s *FoodtraceSmartContract) GetAllIdentities(ctx contractapi.TransactionCon
 	return NewIdentityManager(ctx).GetAllRegisteredIdentities()
 }
 
-// Add this to shipment_contract.go
-
 // GetAllAliases returns a list of all registered aliases (shortNames) in the system.
 // This is a public function that doesn't require admin privileges.
-// Fix for GetAllAliases (from earlier artifact)
 func (s *FoodtraceSmartContract) GetAllAliases(ctx contractapi.TransactionContextInterface) ([]string, error) {
 	logger.Debug("Chaincode Call: GetAllAliases (public access)")
 
@@ -193,11 +194,8 @@ func (s *FoodtraceSmartContract) GetAllAliasesWithDetails(ctx contractapi.Transa
 	return aliasDetails, nil
 }
 
-// Add this to shipment_contract.go
-
 // GetAliasesByRole returns aliases filtered by a specific role.
 // This is a public function that doesn't require admin privileges.
-// Fix for GetAliasesByRole (from earlier artifact)
 func (s *FoodtraceSmartContract) GetAliasesByRole(ctx contractapi.TransactionContextInterface, roleFilter string) ([]string, error) {
 	logger.Debugf("Chaincode Call: GetAliasesByRole for role '%s' (public access)", roleFilter)
 
@@ -220,7 +218,6 @@ func (s *FoodtraceSmartContract) GetAliasesByRole(ctx contractapi.TransactionCon
 	}
 	defer resultsIterator.Close()
 
-	// FIXED: Initialize as empty slice, not nil
 	aliases := []string{}
 	aliasSet := make(map[string]bool)
 

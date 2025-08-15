@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -129,6 +133,10 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ distributorData }),
     });
+  }
+
+  async getSensorLogs(shipmentId: string) {
+    return this.request<any>(`/api/shipments/${encodeURIComponent(shipmentId)}/sensor-logs`);
   }
 
   async receiveShipment(shipmentId: string, retailerData: any) {

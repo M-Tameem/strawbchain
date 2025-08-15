@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Layout from '@/components/Layout';
@@ -381,7 +385,7 @@ const ShipmentDetails = () => {
                 <DetailItem label="Est. Delivery Date/Time" value={formatDate(shipment.distributorData.deliveryDateTime)} />
                 <DetailItem label="Vehicle/Line ID" value={shipment.distributorData.distributionLineId} />
                 <DetailItem label="Temperature Range" value={shipment.distributorData.temperatureRange} />
-                <DetailItem label="Storage Temperature" value={shipment.distributorData.storageTemperature ? `${shipment.distributorData.storageTemperature}°C` : undefined} />
+                <DetailItem label="Recorded Temperatures" value={shipment.distributorData.storageTemperatures && shipment.distributorData.storageTemperatures.length > 0 ? shipment.distributorData.storageTemperatures.map(t => `${t}°C`).join(', ') : undefined} />
                 <DetailItem label="Transport Conditions" value={shipment.distributorData.transportConditions} />
                 <DetailItem label="Distribution Center" value={shipment.distributorData.distributionCenter} />
                 <DetailItem label="Transit Log" value={Array.isArray(shipment.distributorData.transitLocationLog) ? shipment.distributorData.transitLocationLog.join(', ') : shipment.distributorData.transitLocationLog} />

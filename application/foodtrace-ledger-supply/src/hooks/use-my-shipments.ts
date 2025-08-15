@@ -1,3 +1,7 @@
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 import { useEffect, useState } from 'react';
 import { apiClient } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';

@@ -1,4 +1,7 @@
-#!/usr/bin/env node
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 /**
  * Database utility functions for Foodtrace BFF Server
  */

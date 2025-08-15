@@ -1,4 +1,8 @@
-import React, { useState } from 'react';
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,12 +29,12 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
   const { toast } = useToast();
   const retailerAliases = useAliases('retailer');
   const [loading, setLoading] = useState(false);
+  const [sensorLogs, setSensorLogs] = useState<{ timestamp: string; temperature: number; humidity: number; coordinates: GeoPoint; }[]>([]);
   const [formData, setFormData] = useState({
     pickupDateTime: '',
     deliveryDateTime: '',
     transportConditions: '',
     temperatureRange: '',
-    storageTemperature: '',
     distributionCenter: '',
     distributionLineId: '',
     transitLocationLog: '',
@@ -42,6 +46,21 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const logs = await apiClient.getSensorLogs(shipmentId);
+        if (Array.isArray(logs)) {
+          setSensorLogs(logs);
+          setFormData(prev => ({ ...prev, transitGpsLog: logs.map((l: any) => l.coordinates) }));
+        }
+      } catch (err) {
+        console.error('Failed to load sensor logs', err);
+      }
+    };
+    fetchLogs();
+  }, [shipmentId]);
+
   const fillWithDemoData = () => {
     const now = new Date();
     const delivery = new Date(now.getTime() + 6 * 60 * 60 * 1000);
@@ -50,7 +69,6 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
       deliveryDateTime: delivery.toISOString().slice(0,16),
       transportConditions: 'Refrigerated',
       temperatureRange: '0-4°C',
-      storageTemperature: '2°C',
       distributionCenter: 'Demo DC',
       distributionLineId: 'TRUCK_DEMO_1',
       transitLocationLog: 'Warehouse A, Hub B',
@@ -99,11 +117,6 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
       const pickupDateTimeISO = new Date(formData.pickupDateTime).toISOString();
       const deliveryDateTimeISO = new Date(formData.deliveryDateTime).toISOString();
 
-      // Handle storage temperature conversion
-      const storageTemperatureValue = formData.storageTemperature.trim() 
-        ? parseFloat(formData.storageTemperature.trim()) 
-        : undefined;
-
       // Handle transit location log as array
       const transitLocationLogArray = formData.transitLocationLog.trim()
         ? formData.transitLocationLog.split(',').map(location => location.trim()).filter(location => location)
@@ -115,7 +128,7 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
         deliveryDateTime: deliveryDateTimeISO,
         transportConditions: formData.transportConditions.trim(),
         temperatureRange: formData.temperatureRange.trim(),
-        storageTemperature: storageTemperatureValue,
+        storageTemperatures: sensorLogs.map(log => log.temperature),
         distributionCenter: formData.distributionCenter.trim(),
         distributionLineId: formData.distributionLineId.trim(),
         transitLocationLog: transitLocationLogArray,
@@ -210,15 +223,16 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <Label htmlFor="storageTemperature">Storage Temperature (°C)</Label>
-              <Input
-                id="storageTemperature"
-                type="number"
-                step="0.1"
-                value={formData.storageTemperature}
-                onChange={(e) => handleInputChange('storageTemperature', e.target.value)}
-                placeholder="e.g., 4.5"
-              />
+              <Label>Recorded Temperatures (°C)</Label>
+              {sensorLogs.length > 0 ? (
+                <ul className="bg-gray-100 p-2 rounded text-sm max-h-40 overflow-y-auto">
+                  {sensorLogs.map((log, idx) => (
+                    <li key={idx}>{new Date(log.timestamp).toLocaleString()}: {log.temperature}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-gray-500">No sensor data</p>
+              )}
             </div>
             <div>
               <Label htmlFor="distributionLineId">Vehicle/Line ID *</Label>
@@ -253,11 +267,18 @@ const DistributeShipmentForm: React.FC<DistributeShipmentFormProps> = ({
               rows={2}
             />
           </div>
+          {sensorLogs.length > 0 && (
+            <div className="md:col-span-2">
+              <Label>Sensor Logs</Label>
+              <pre className="bg-gray-100 p-2 rounded text-xs overflow-x-auto">{JSON.stringify(sensorLogs, null, 2)}</pre>
+            </div>
+          )}
           <div className="md:col-span-2 space-y-2">
-            <Label>Transit GPS Log (click map to add points)</Label>
+            <Label>Transit GPS Log {sensorLogs.length > 0 ? '(auto-filled from sensors)' : '(click map to add points)'}</Label>
             <RouteMapInput
               points={formData.transitGpsLog}
               onChange={(pts) => handleInputChange('transitGpsLog', pts)}
+              readOnly={sensorLogs.length > 0}
             />
           </div>
 

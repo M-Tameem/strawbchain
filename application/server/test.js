@@ -1,4 +1,7 @@
-#!/usr/bin/env node
+// Author: Muhammad-Tameem Mughal
+// Last updated: Aug 15, 2025
+// Last modified by: Muhammad-Tameem Mughal
+
 /**
  * Comprehensive Integration Test Suite for Foodtrace BFF Server
  * Tests all working API endpoints with current chaincode limitations
@@ -780,7 +783,7 @@ async function testDistributorOperations() {
       deliveryDateTime: '2024-12-02T16:00:00Z',
       distributionLineId: 'DIST_LINE_001',
       temperatureRange: '2-4°C',
-      storageTemperature: 3.0,
+      storageTemperatures: [3.0],
       transitLocationLog: ['Warehouse A', 'Transit Hub B', 'Final Destination'],
       transportConditions: 'Refrigerated truck',
       distributionCenter: 'Test Distribution Center',
@@ -1000,7 +1003,7 @@ async function testCompleteWorkflow() {
       deliveryDateTime: '2024-12-02T16:00:00Z',
       distributionLineId: 'E2E_DIST_LINE_001',
       temperatureRange: '2-4°C',
-      storageTemperature: 3.0,
+      storageTemperatures: [3.0],
       transitLocationLog: ['E2E Warehouse', 'E2E Transit Hub', 'E2E Destination'],
       transportConditions: 'E2E Refrigerated truck',
       distributionCenter: 'E2E Distribution Center',
@@ -1160,7 +1163,7 @@ async function testPopulatedShipmentStatusQueries() {
             deliveryDateTime: '2024-02-04T08:00:00Z',
             distributionLineId: `distline-${shipmentId}`, // CORRECTED KEY (matches json:"distributionLineId")
             temperatureRange: "2-8C",
-            storageTemperature: 4.5,
+            storageTemperatures: [4.5],
             transitLocationLog: [`Warehouse POP-${shipmentId}`, `Hub POP-${shipmentId}`],
             transportConditions: "Refrigerated Populated",
             distributionCenter: 'Populated Distro Center',
