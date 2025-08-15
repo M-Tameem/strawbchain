@@ -2,7 +2,7 @@ Author: Muhammad-Tameem Mughal
 Last updated: Aug 15, 2025
 Last modified by: Muhammad-Tameem Mughal
 
-# FoodTrace Blockchain Overview
+# StrawbChain Blockchain Overview
 
 This repository implements an end-to-end food supply chain tracing system built on Hyperledger Fabric. The solution is composed of three major parts:
 
@@ -30,6 +30,18 @@ Typical flow of a shipment:
 5. Retailer receives the shipment and can optionally mark it as sold/consumed.
 6. At any point an admin may initiate a recall which propagates to all related shipments.
 
-For build and testing, run `go vet` and `go build` under `chaincode/`. For the Node projects run `npm install` followed by `npm run build` (frontend) or `npm build` - for the server, please use node start.js to run locally.
+For build and testing, run `go vet` and `go build` under `chaincode/`. To create the final bin file for upload to Kaleido, run:
+GOOS=linux GOARCH=amd64 go build -o foodtrace.bin
+
+For the Node projects run `npm install` followed by `npm run build` (frontend) - for the server, please use node start.js to run locally.
 
 For running, please ensure a .env file is placed in the 'application/server' directory, please see env-example.txt
+
+
+## Known bugs:
+The transform and create product functionality occasionally doesn't work - I couldn't figure out why unfortunately.
+While the code is optimized for usage with CouchDB, there is no config file option for it in Kaleido, which doesn't allow those optimizations to be utilized adequately.
+
+## Common pitfalls during development:
+Kaleido is VERY specific with it's schema, do NOT, under any circumstance, use 'omitempty' in any of the Go structs, Kaleido will complain. This would not be an issue in a manual deployment
+Be super careful with losing your .db file during deployment, you will have to rebuild the Kaleido network from scratch to redeploy to Kaleido, as the db contains Kaleido network specific credentials.
