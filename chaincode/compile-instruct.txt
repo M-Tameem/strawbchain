@@ -1,8 +1,21 @@
 Author: Muhammad-Tameem Mughal
-Last updated: Aug 15, 2025
+Last updated: Aug 15 2025
 Last modified by: Muhammad-Tameem Mughal
 
-To compile for Kaleido, please run: 
+Module Name:
+
+The chaincode module name is currently set to foodtrace.
+You generally do not need to change this — it is never exposed to end-users (including in development).
+
+If you do need to change it (e.g. re-naming the repo/module):
+
+Replace import "foodtrace" at the top of all .go files with the new path.
+Update all foodtrace/... references to match the new path.
+Update the module line in main.go.
+
+Building for Kaleido:
+From the chaincode directory, run:
+
 GOOS=linux GOARCH=amd64 go build -o foodtrace.bin
 
-foodtrace.bin can be replaced by any end binary file you wish, it does not affect anything in production.
+foodtrace.bin can be renamed to any filename; the name has no effect in production.

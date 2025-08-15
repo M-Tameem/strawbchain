@@ -17,7 +17,6 @@ import (
 // --- Lifecycle: Admin Operations ---
 
 // BootstrapLedger initializes the ledger with a bootstrap admin identity if no admin exists.
-// FIXED: Improved to handle multiple calls gracefully
 func (s *FoodtraceSmartContract) BootstrapLedger(ctx contractapi.TransactionContextInterface) error {
 	logger.Info("Attempting to bootstrap ledger with initial admin (direct write method)...")
 	im := NewIdentityManager(ctx) // Still useful for its helper methods like createKey
@@ -28,9 +27,8 @@ func (s *FoodtraceSmartContract) BootstrapLedger(ctx contractapi.TransactionCont
 	}
 	if anyAdminAlreadyExists {
 		msg := "system already has admins or is bootstrapped. BootstrapLedger should not be re-run."
-		logger.Info(msg) // FIXED: Use Info instead of Warning for expected behavior
+		logger.Info(msg)
 		// This is not an error if the script handles it, but for a strict bootstrap, it is.
-		// The Python script checks for this specific message, so we should return it.
 		return errors.New(msg)
 	}
 
@@ -235,63 +233,59 @@ func (s *FoodtraceSmartContract) TestGetCallerIdentity(ctx contractapi.Transacti
 	return map[string]string{"fullId": fullID, "alias": alias, "enrollmentId": enrollID, "mspId": mspID}, nil
 }
 
-// contract/shipment_admin_ops.go
-
-// ...
 func (s *FoodtraceSmartContract) TestAssignRoleToSelf(ctx contractapi.TransactionContextInterface, role string) error {
-    logger.Warningf("TESTING FUNCTION TestAssignRoleToSelf called for role '%s'. This should NOT be used in production directly.", role)
-    im := NewIdentityManager(ctx)
-    actorInfoFromContract, err := s.getCurrentActorInfo(ctx) 
-    if err != nil {
-        return fmt.Errorf("TestAssignRoleToSelf: failed to get caller info: %w", err)
-    }
+	logger.Warningf("TESTING FUNCTION TestAssignRoleToSelf called for role '%s'. This should NOT be used in production directly.", role)
+	im := NewIdentityManager(ctx)
+	actorInfoFromContract, err := s.getCurrentActorInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("TestAssignRoleToSelf: failed to get caller info: %w", err)
+	}
 
-    isCallerAdmin, adminErr := im.IsCurrentUserAdmin()
-    if adminErr != nil {
-        logger.Debugf("TestAssignRoleToSelf: Could not check admin status: %v", adminErr)
-    }
+	isCallerAdmin, adminErr := im.IsCurrentUserAdmin()
+	if adminErr != nil {
+		logger.Debugf("TestAssignRoleToSelf: Could not check admin status: %v", adminErr)
+	}
 
-    // Attempt to get existing IdentityInfo
-    _, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
-    // REMOVE THIS LINE COMPLETELY: idInfo = nil 
-    if err != nil && strings.Contains(err.Error(), "not found") {
-        logger.Infof("TestAssignRoleToSelf: Caller '%s' (alias '%s') not registered. Attempting test self-registration.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
-        
-        anyAdminExists, adminCheckErr := im.AnyAdminExists()
-        if adminCheckErr != nil {
-            return fmt.Errorf("TestAssignRoleToSelf: failed to check admin existence: %w", adminCheckErr)
-        }
-        
-        if !anyAdminExists || isCallerAdmin {
-            regErr := im.RegisterIdentity(actorInfoFromContract.fullID, actorInfoFromContract.alias, actorInfoFromContract.alias)
-            if regErr != nil {
-                return fmt.Errorf("TestAssignRoleToSelf: failed to self-register for test: %w", regErr)
-            }
-            logger.Infof("TestAssignRoleToSelf: Self-registered '%s' with alias '%s'.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
-        } else {
-            return fmt.Errorf("TestAssignRoleToSelf: cannot self-register when admins exist and caller is not admin")
-        }
-        
-        // Re-fetch after registration
-        _, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
-        if err != nil {
-            return fmt.Errorf("TestAssignRoleToSelf: failed to get IdentityInfo after self-registration: %w", err)
-        }
-    } else if err != nil {
-        return fmt.Errorf("TestAssignRoleToSelf: error getting identity info: %w", err)
-    }
+	// Attempt to get existing IdentityInfo
+	_, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
+	// REMOVE THIS LINE COMPLETELY: idInfo = nil
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		logger.Infof("TestAssignRoleToSelf: Caller '%s' (alias '%s') not registered. Attempting test self-registration.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
 
-    // Use the unchecked role assignment for testing
-    err = im.AssignRoleUncheckedForTest(actorInfoFromContract.fullID, role)
-    if err != nil {
-        return fmt.Errorf("TestAssignRoleToSelf: AssignRoleUncheckedForTest failed for role '%s': %w", role, err)
-    }
-    
-    logger.Infof("TestAssignRoleToSelf: Successfully assigned role '%s' to self '%s' via test method.", role, actorInfoFromContract.fullID)
-    return nil
+		anyAdminExists, adminCheckErr := im.AnyAdminExists()
+		if adminCheckErr != nil {
+			return fmt.Errorf("TestAssignRoleToSelf: failed to check admin existence: %w", adminCheckErr)
+		}
+
+		if !anyAdminExists || isCallerAdmin {
+			regErr := im.RegisterIdentity(actorInfoFromContract.fullID, actorInfoFromContract.alias, actorInfoFromContract.alias)
+			if regErr != nil {
+				return fmt.Errorf("TestAssignRoleToSelf: failed to self-register for test: %w", regErr)
+			}
+			logger.Infof("TestAssignRoleToSelf: Self-registered '%s' with alias '%s'.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
+		} else {
+			return fmt.Errorf("TestAssignRoleToSelf: cannot self-register when admins exist and caller is not admin")
+		}
+
+		// Re-fetch after registration
+		_, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
+		if err != nil {
+			return fmt.Errorf("TestAssignRoleToSelf: failed to get IdentityInfo after self-registration: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("TestAssignRoleToSelf: error getting identity info: %w", err)
+	}
+
+	// Use the unchecked role assignment for testing
+	err = im.AssignRoleUncheckedForTest(actorInfoFromContract.fullID, role)
+	if err != nil {
+		return fmt.Errorf("TestAssignRoleToSelf: AssignRoleUncheckedForTest failed for role '%s': %w", role, err)
+	}
+
+	logger.Infof("TestAssignRoleToSelf: Successfully assigned role '%s' to self '%s' via test method.", role, actorInfoFromContract.fullID)
+	return nil
 }
-// ...
-// FIXED: Add a helper function to get full ID for alias (for Python script)
+
 func (s *FoodtraceSmartContract) GetFullIDForAlias(ctx contractapi.TransactionContextInterface, alias string) (string, error) {
 	im := NewIdentityManager(ctx)
 	return im.ResolveIdentity(alias)

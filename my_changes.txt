@@ -1,0 +1,586 @@
+diff --git a/application/server/test.js b/application/server/test.js
+index afaf815..1fe5309 100644
+--- a/application/server/test.js
++++ b/application/server/test.js
+@@ -2,7 +2,6 @@
+ // Last updated: Aug 15, 2025
+ // Last modified by: Muhammad-Tameem Mughal
+ 
+-#!/usr/bin/env node
+ /**
+  * Comprehensive Integration Test Suite for Foodtrace BFF Server
+  * Tests all working API endpoints with current chaincode limitations
+diff --git a/chaincode/compile-instruct.txt b/chaincode/compile-instruct.txt
+index 8479194..23106d1 100644
+--- a/chaincode/compile-instruct.txt
++++ b/chaincode/compile-instruct.txt
+@@ -1,8 +1,21 @@
+ Author: Muhammad-Tameem Mughal
+-Last updated: Aug 15, 2025
++Last updated: Aug 15 2025
+ Last modified by: Muhammad-Tameem Mughal
+ 
+-To compile for Kaleido, please run: 
++Module Name:
++
++The chaincode module name is currently set to foodtrace.
++You generally do not need to change this — it is never exposed to end-users (including in development).
++
++If you do need to change it (e.g. re-naming the repo/module):
++
++Replace import "foodtrace" at the top of all .go files with the new path.
++Update all foodtrace/... references to match the new path.
++Update the module line in main.go.
++
++Building for Kaleido:
++From the chaincode directory, run:
++
+ GOOS=linux GOARCH=amd64 go build -o foodtrace.bin
+ 
+-foodtrace.bin can be replaced by any end binary file you wish, it does not affect anything in production.
+\ No newline at end of file
++foodtrace.bin can be renamed to any filename; the name has no effect in production.
+\ No newline at end of file
+diff --git a/chaincode/contract/identity_manager.go b/chaincode/contract/identity_manager.go
+index e82b5a4..ec550bc 100644
+--- a/chaincode/contract/identity_manager.go
++++ b/chaincode/contract/identity_manager.go
+@@ -11,7 +11,7 @@ import (
+ 	"strings"
+ 	"time"
+ 
+-	"foodtrace/model" // Correct and clean import based on your go.mod
++	"foodtrace/model"
+ 
+ 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
+ 	"github.com/hyperledger/fabric/common/flogging"
+@@ -32,7 +32,7 @@ var ValidRoles = map[string]bool{
+ 	"processor":   true,
+ 	"distributor": true,
+ 	"retailer":    true,
+-	"certifier":   true, // <<< NEWLY ADDED ROLE
++	"certifier":   true,
+ 	// "admin" is a special status, managed by IsAdmin, not a role in this list.
+ }
+ 
+diff --git a/chaincode/contract/shipment_admin_ops.go b/chaincode/contract/shipment_admin_ops.go
+index c35faca..ee0c645 100644
+--- a/chaincode/contract/shipment_admin_ops.go
++++ b/chaincode/contract/shipment_admin_ops.go
+@@ -17,7 +17,6 @@ import (
+ // --- Lifecycle: Admin Operations ---
+ 
+ // BootstrapLedger initializes the ledger with a bootstrap admin identity if no admin exists.
+-// FIXED: Improved to handle multiple calls gracefully
+ func (s *FoodtraceSmartContract) BootstrapLedger(ctx contractapi.TransactionContextInterface) error {
+ 	logger.Info("Attempting to bootstrap ledger with initial admin (direct write method)...")
+ 	im := NewIdentityManager(ctx) // Still useful for its helper methods like createKey
+@@ -28,9 +27,8 @@ func (s *FoodtraceSmartContract) BootstrapLedger(ctx contractapi.TransactionCont
+ 	}
+ 	if anyAdminAlreadyExists {
+ 		msg := "system already has admins or is bootstrapped. BootstrapLedger should not be re-run."
+-		logger.Info(msg) // FIXED: Use Info instead of Warning for expected behavior
++		logger.Info(msg)
+ 		// This is not an error if the script handles it, but for a strict bootstrap, it is.
+-		// The Python script checks for this specific message, so we should return it.
+ 		return errors.New(msg)
+ 	}
+ 
+@@ -235,64 +233,60 @@ func (s *FoodtraceSmartContract) TestGetCallerIdentity(ctx contractapi.Transacti
+ 	return map[string]string{"fullId": fullID, "alias": alias, "enrollmentId": enrollID, "mspId": mspID}, nil
+ }
+ 
+-// contract/shipment_admin_ops.go
+-
+-// ...
+ func (s *FoodtraceSmartContract) TestAssignRoleToSelf(ctx contractapi.TransactionContextInterface, role string) error {
+-    logger.Warningf("TESTING FUNCTION TestAssignRoleToSelf called for role '%s'. This should NOT be used in production directly.", role)
+-    im := NewIdentityManager(ctx)
+-    actorInfoFromContract, err := s.getCurrentActorInfo(ctx) 
+-    if err != nil {
+-        return fmt.Errorf("TestAssignRoleToSelf: failed to get caller info: %w", err)
+-    }
+-
+-    isCallerAdmin, adminErr := im.IsCurrentUserAdmin()
+-    if adminErr != nil {
+-        logger.Debugf("TestAssignRoleToSelf: Could not check admin status: %v", adminErr)
+-    }
+-
+-    // Attempt to get existing IdentityInfo
+-    _, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
+-    // REMOVE THIS LINE COMPLETELY: idInfo = nil 
+-    if err != nil && strings.Contains(err.Error(), "not found") {
+-        logger.Infof("TestAssignRoleToSelf: Caller '%s' (alias '%s') not registered. Attempting test self-registration.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
+-        
+-        anyAdminExists, adminCheckErr := im.AnyAdminExists()
+-        if adminCheckErr != nil {
+-            return fmt.Errorf("TestAssignRoleToSelf: failed to check admin existence: %w", adminCheckErr)
+-        }
+-        
+-        if !anyAdminExists || isCallerAdmin {
+-            regErr := im.RegisterIdentity(actorInfoFromContract.fullID, actorInfoFromContract.alias, actorInfoFromContract.alias)
+-            if regErr != nil {
+-                return fmt.Errorf("TestAssignRoleToSelf: failed to self-register for test: %w", regErr)
+-            }
+-            logger.Infof("TestAssignRoleToSelf: Self-registered '%s' with alias '%s'.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
+-        } else {
+-            return fmt.Errorf("TestAssignRoleToSelf: cannot self-register when admins exist and caller is not admin")
+-        }
+-        
+-        // Re-fetch after registration
+-        _, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
+-        if err != nil {
+-            return fmt.Errorf("TestAssignRoleToSelf: failed to get IdentityInfo after self-registration: %w", err)
+-        }
+-    } else if err != nil {
+-        return fmt.Errorf("TestAssignRoleToSelf: error getting identity info: %w", err)
+-    }
+-
+-    // Use the unchecked role assignment for testing
+-    err = im.AssignRoleUncheckedForTest(actorInfoFromContract.fullID, role)
+-    if err != nil {
+-        return fmt.Errorf("TestAssignRoleToSelf: AssignRoleUncheckedForTest failed for role '%s': %w", role, err)
+-    }
+-    
+-    logger.Infof("TestAssignRoleToSelf: Successfully assigned role '%s' to self '%s' via test method.", role, actorInfoFromContract.fullID)
+-    return nil
++	logger.Warningf("TESTING FUNCTION TestAssignRoleToSelf called for role '%s'. This should NOT be used in production directly.", role)
++	im := NewIdentityManager(ctx)
++	actorInfoFromContract, err := s.getCurrentActorInfo(ctx)
++	if err != nil {
++		return fmt.Errorf("TestAssignRoleToSelf: failed to get caller info: %w", err)
++	}
++
++	isCallerAdmin, adminErr := im.IsCurrentUserAdmin()
++	if adminErr != nil {
++		logger.Debugf("TestAssignRoleToSelf: Could not check admin status: %v", adminErr)
++	}
++
++	// Attempt to get existing IdentityInfo
++	_, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
++	// REMOVE THIS LINE COMPLETELY: idInfo = nil
++	if err != nil && strings.Contains(err.Error(), "not found") {
++		logger.Infof("TestAssignRoleToSelf: Caller '%s' (alias '%s') not registered. Attempting test self-registration.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
++
++		anyAdminExists, adminCheckErr := im.AnyAdminExists()
++		if adminCheckErr != nil {
++			return fmt.Errorf("TestAssignRoleToSelf: failed to check admin existence: %w", adminCheckErr)
++		}
++
++		if !anyAdminExists || isCallerAdmin {
++			regErr := im.RegisterIdentity(actorInfoFromContract.fullID, actorInfoFromContract.alias, actorInfoFromContract.alias)
++			if regErr != nil {
++				return fmt.Errorf("TestAssignRoleToSelf: failed to self-register for test: %w", regErr)
++			}
++			logger.Infof("TestAssignRoleToSelf: Self-registered '%s' with alias '%s'.", actorInfoFromContract.fullID, actorInfoFromContract.alias)
++		} else {
++			return fmt.Errorf("TestAssignRoleToSelf: cannot self-register when admins exist and caller is not admin")
++		}
++
++		// Re-fetch after registration
++		_, err = im.GetIdentityInfo(actorInfoFromContract.fullID) // MODIFIED HERE
++		if err != nil {
++			return fmt.Errorf("TestAssignRoleToSelf: failed to get IdentityInfo after self-registration: %w", err)
++		}
++	} else if err != nil {
++		return fmt.Errorf("TestAssignRoleToSelf: error getting identity info: %w", err)
++	}
++
++	// Use the unchecked role assignment for testing
++	err = im.AssignRoleUncheckedForTest(actorInfoFromContract.fullID, role)
++	if err != nil {
++		return fmt.Errorf("TestAssignRoleToSelf: AssignRoleUncheckedForTest failed for role '%s': %w", role, err)
++	}
++
++	logger.Infof("TestAssignRoleToSelf: Successfully assigned role '%s' to self '%s' via test method.", role, actorInfoFromContract.fullID)
++	return nil
+ }
+-// ...
+-// FIXED: Add a helper function to get full ID for alias (for Python script)
++
+ func (s *FoodtraceSmartContract) GetFullIDForAlias(ctx contractapi.TransactionContextInterface, alias string) (string, error) {
+ 	im := NewIdentityManager(ctx)
+ 	return im.ResolveIdentity(alias)
+-}
+\ No newline at end of file
++}
+diff --git a/chaincode/contract/shipment_contract.go b/chaincode/contract/shipment_contract.go
+index c5400de..dd4039e 100644
+--- a/chaincode/contract/shipment_contract.go
++++ b/chaincode/contract/shipment_contract.go
+@@ -8,7 +8,7 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
+-	"foodtrace/model" // Assuming model is in a direct subdirectory: foodtrace/model/
++	"foodtrace/model"
+ 	"strings"
+ 	"time"
+ 
+@@ -114,11 +114,8 @@ func (s *FoodtraceSmartContract) GetAllIdentities(ctx contractapi.TransactionCon
+ 	return NewIdentityManager(ctx).GetAllRegisteredIdentities()
+ }
+ 
+-// Add this to shipment_contract.go
+-
+ // GetAllAliases returns a list of all registered aliases (shortNames) in the system.
+ // This is a public function that doesn't require admin privileges.
+-// Fix for GetAllAliases (from earlier artifact)
+ func (s *FoodtraceSmartContract) GetAllAliases(ctx contractapi.TransactionContextInterface) ([]string, error) {
+ 	logger.Debug("Chaincode Call: GetAllAliases (public access)")
+ 
+@@ -197,11 +194,8 @@ func (s *FoodtraceSmartContract) GetAllAliasesWithDetails(ctx contractapi.Transa
+ 	return aliasDetails, nil
+ }
+ 
+-// Add this to shipment_contract.go
+-
+ // GetAliasesByRole returns aliases filtered by a specific role.
+ // This is a public function that doesn't require admin privileges.
+-// Fix for GetAliasesByRole (from earlier artifact)
+ func (s *FoodtraceSmartContract) GetAliasesByRole(ctx contractapi.TransactionContextInterface, roleFilter string) ([]string, error) {
+ 	logger.Debugf("Chaincode Call: GetAliasesByRole for role '%s' (public access)", roleFilter)
+ 
+@@ -224,7 +218,6 @@ func (s *FoodtraceSmartContract) GetAliasesByRole(ctx contractapi.TransactionCon
+ 	}
+ 	defer resultsIterator.Close()
+ 
+-	// FIXED: Initialize as empty slice, not nil
+ 	aliases := []string{}
+ 	aliasSet := make(map[string]bool)
+ 
+diff --git a/chaincode/contract/shipment_helpers.go b/chaincode/contract/shipment_helpers.go
+index 0b164d2..040b1ad 100644
+--- a/chaincode/contract/shipment_helpers.go
++++ b/chaincode/contract/shipment_helpers.go
+@@ -26,7 +26,6 @@ func (s *FoodtraceSmartContract) getCurrentTxTimestamp(ctx contractapi.Transacti
+ 	return ts.AsTime(), nil
+ }
+ 
+-// FIXED: Improved getCurrentActorInfo to handle test scenarios better
+ func (s *FoodtraceSmartContract) getCurrentActorInfo(ctx contractapi.TransactionContextInterface) (*actorInfo, error) {
+ 	im := NewIdentityManager(ctx)
+ 	fullID, err := im.GetCurrentIdentityFullID()
+@@ -41,7 +40,6 @@ func (s *FoodtraceSmartContract) getCurrentActorInfo(ctx contractapi.Transaction
+ 	} else {
+ 		logger.Debugf("Could not retrieve IdentityInfo (or alias) for actor %s: %v. Attempting fallback.", fullID, errGetInfo)
+ 
+-		// FIXED: Try to extract alias from X.509 CN if it follows our test pattern
+ 		if strings.Contains(fullID, "::CN=") {
+ 			parts := strings.Split(fullID, "::CN=")
+ 			if len(parts) > 1 {
+@@ -155,13 +153,13 @@ func (s *FoodtraceSmartContract) validateGeoPointArray(gps []model.GeoPoint, fie
+ }
+ 
+ func (s *FoodtraceSmartContract) validateFloatArray(nums []float64, field string, maxItems int) error {
+-        if nums == nil {
+-                return nil
+-        }
+-        if len(nums) > maxItems {
+-                return fmt.Errorf("%s has %d items, exceeding maximum of %d", field, len(nums), maxItems)
+-        }
+-        return nil
++	if nums == nil {
++		return nil
++	}
++	if len(nums) > maxItems {
++		return fmt.Errorf("%s has %d items, exceeding maximum of %d", field, len(nums), maxItems)
++	}
++	return nil
+ }
+ 
+ func parseDateString(str, field string, required bool) (time.Time, error) {
+@@ -353,15 +351,15 @@ func (s *FoodtraceSmartContract) validateDistributorDataArgs(ddJSON string) (*mo
+ 	var ddArgRaw struct {
+ 		PickupDateTimeStr     string           `json:"pickupDateTime"`
+ 		DeliveryDateTimeStr   string           `json:"deliveryDateTime"`
+-                DistributionLineID    string           `json:"distributionLineId"`
+-                TemperatureRange      string           `json:"temperatureRange"`
+-                StorageTemperatures   []float64        `json:"storageTemperatures"`
+-                TransitLocationLog    []string         `json:"transitLocationLog"`
+-                TransitGPSLog         []model.GeoPoint `json:"transitGpsLog"`
+-                TransportConditions   string           `json:"transportConditions"`
+-                DistributionCenter    string           `json:"distributionCenter"`
+-                DestinationRetailerID string           `json:"destinationRetailerId"`
+-        }
++		DistributionLineID    string           `json:"distributionLineId"`
++		TemperatureRange      string           `json:"temperatureRange"`
++		StorageTemperatures   []float64        `json:"storageTemperatures"`
++		TransitLocationLog    []string         `json:"transitLocationLog"`
++		TransitGPSLog         []model.GeoPoint `json:"transitGpsLog"`
++		TransportConditions   string           `json:"transportConditions"`
++		DistributionCenter    string           `json:"distributionCenter"`
++		DestinationRetailerID string           `json:"destinationRetailerId"`
++	}
+ 	if err := json.Unmarshal([]byte(ddJSON), &ddArgRaw); err != nil {
+ 		return nil, fmt.Errorf("invalid distributorDataJSON: %w", err)
+ 	}
+@@ -382,18 +380,18 @@ func (s *FoodtraceSmartContract) validateDistributorDataArgs(ddJSON string) (*mo
+ 	if err := s.validateOptionalString(ddArgRaw.TemperatureRange, "distributorData.temperatureRange", maxStringInputLength); err != nil {
+ 		return nil, err
+ 	}
+-        if err := s.validateStringArray(ddArgRaw.TransitLocationLog, "distributorData.transitLocationLog", maxArrayElements, maxDescriptionLength); err != nil {
+-                return nil, err
+-        }
+-        if err := s.validateGeoPointArray(ddArgRaw.TransitGPSLog, "distributorData.transitGpsLog", maxArrayElements); err != nil {
+-                return nil, err
+-        }
+-        if err := s.validateFloatArray(ddArgRaw.StorageTemperatures, "distributorData.storageTemperatures", maxArrayElements); err != nil {
+-                return nil, err
+-        }
+-        if err := s.validateOptionalString(ddArgRaw.TransportConditions, "distributorData.transportConditions", maxDescriptionLength); err != nil {
+-                return nil, err
+-        }
++	if err := s.validateStringArray(ddArgRaw.TransitLocationLog, "distributorData.transitLocationLog", maxArrayElements, maxDescriptionLength); err != nil {
++		return nil, err
++	}
++	if err := s.validateGeoPointArray(ddArgRaw.TransitGPSLog, "distributorData.transitGpsLog", maxArrayElements); err != nil {
++		return nil, err
++	}
++	if err := s.validateFloatArray(ddArgRaw.StorageTemperatures, "distributorData.storageTemperatures", maxArrayElements); err != nil {
++		return nil, err
++	}
++	if err := s.validateOptionalString(ddArgRaw.TransportConditions, "distributorData.transportConditions", maxDescriptionLength); err != nil {
++		return nil, err
++	}
+ 	if err := s.validateRequiredString(ddArgRaw.DistributionCenter, "distributorData.distributionCenter", maxStringInputLength); err != nil {
+ 		return nil, err
+ 	}
+@@ -401,21 +399,20 @@ func (s *FoodtraceSmartContract) validateDistributorDataArgs(ddJSON string) (*mo
+ 		return nil, err
+ 	}
+ 
+-        return &model.DistributorData{
+-                PickupDateTime:        pickupDateTime,
+-                DeliveryDateTime:      deliveryDateTime,
+-                DistributionLineID:    ddArgRaw.DistributionLineID,
+-                TemperatureRange:      ddArgRaw.TemperatureRange,
+-                StorageTemperatures:   ddArgRaw.StorageTemperatures,
+-                TransitLocationLog:    ddArgRaw.TransitLocationLog,
+-                TransitGPSLog:         ddArgRaw.TransitGPSLog,
+-                TransportConditions:   ddArgRaw.TransportConditions,
+-                DistributionCenter:    ddArgRaw.DistributionCenter,
+-                DestinationRetailerID: ddArgRaw.DestinationRetailerID,
+-        }, nil
++	return &model.DistributorData{
++		PickupDateTime:        pickupDateTime,
++		DeliveryDateTime:      deliveryDateTime,
++		DistributionLineID:    ddArgRaw.DistributionLineID,
++		TemperatureRange:      ddArgRaw.TemperatureRange,
++		StorageTemperatures:   ddArgRaw.StorageTemperatures,
++		TransitLocationLog:    ddArgRaw.TransitLocationLog,
++		TransitGPSLog:         ddArgRaw.TransitGPSLog,
++		TransportConditions:   ddArgRaw.TransportConditions,
++		DistributionCenter:    ddArgRaw.DistributionCenter,
++		DestinationRetailerID: ddArgRaw.DestinationRetailerID,
++	}, nil
+ }
+ 
+-// FIXED: Complete validation for retailer data
+ func (s *FoodtraceSmartContract) validateRetailerDataArgs(rdJSON string) (*model.RetailerData, error) {
+ 	var rdArgRaw struct {
+ 		DateReceivedStr       string          `json:"dateReceived"`
+@@ -447,7 +444,6 @@ func (s *FoodtraceSmartContract) validateRetailerDataArgs(rdJSON string) (*model
+ 		return nil, err
+ 	}
+ 
+-	// FIXED: Complete all validation calls
+ 	if err := s.validateRequiredString(rdArgRaw.RetailerLineID, "retailerData.retailerLineId", maxStringInputLength); err != nil {
+ 		return nil, err
+ 	}
+@@ -493,7 +489,6 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
+ 		return
+ 	}
+ 
+-	// FIXED: Initialize top-level slices as empty, not nil
+ 	if shipment.InputShipmentIDs == nil {
+ 		shipment.InputShipmentIDs = []string{}
+ 	}
+@@ -523,27 +518,27 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
+ 
+ 	// Initialize DistributorData if nil and ensure nested slices are not nil
+ 	if shipment.DistributorData == nil {
+-                shipment.DistributorData = &model.DistributorData{
+-                        TransitLocationLog:  []string{}, // FIXED: Initialize as empty slice
+-                        TransitGPSLog:       []model.GeoPoint{},
+-                        SensorLogs:          []model.ColdChainLog{},
+-                        StorageTemperatures: []float64{},
+-                }
+-        } else {
+-                // Ensure nested slice is not nil
+-                if shipment.DistributorData.TransitLocationLog == nil {
+-                        shipment.DistributorData.TransitLocationLog = []string{}
+-                }
+-                if shipment.DistributorData.TransitGPSLog == nil {
+-                        shipment.DistributorData.TransitGPSLog = []model.GeoPoint{}
+-                }
+-                if shipment.DistributorData.SensorLogs == nil {
+-                        shipment.DistributorData.SensorLogs = []model.ColdChainLog{}
+-                }
+-                if shipment.DistributorData.StorageTemperatures == nil {
+-                        shipment.DistributorData.StorageTemperatures = []float64{}
+-                }
+-        }
++		shipment.DistributorData = &model.DistributorData{
++			TransitLocationLog:  []string{}, // FIXED: Initialize as empty slice
++			TransitGPSLog:       []model.GeoPoint{},
++			SensorLogs:          []model.ColdChainLog{},
++			StorageTemperatures: []float64{},
++		}
++	} else {
++		// Ensure nested slice is not nil
++		if shipment.DistributorData.TransitLocationLog == nil {
++			shipment.DistributorData.TransitLocationLog = []string{}
++		}
++		if shipment.DistributorData.TransitGPSLog == nil {
++			shipment.DistributorData.TransitGPSLog = []model.GeoPoint{}
++		}
++		if shipment.DistributorData.SensorLogs == nil {
++			shipment.DistributorData.SensorLogs = []model.ColdChainLog{}
++		}
++		if shipment.DistributorData.StorageTemperatures == nil {
++			shipment.DistributorData.StorageTemperatures = []float64{}
++		}
++	}
+ 
+ 	// Initialize RetailerData if nil
+ 	if shipment.RetailerData == nil {
+@@ -554,7 +549,7 @@ func ensureShipmentSchemaCompliance(shipment *model.Shipment) {
+ 	if shipment.RecallInfo == nil {
+ 		shipment.RecallInfo = &model.RecallInfo{
+ 			IsRecalled:        false,
+-			LinkedShipmentIDs: []string{}, // FIXED: Initialize as empty slice
++			LinkedShipmentIDs: []string{},
+ 		}
+ 	} else {
+ 		// Ensure nested slice is not nil
+@@ -724,7 +719,7 @@ func AbsDuration(d time.Duration) time.Duration {
+ 	return d
+ }
+ 
+-// min is a simple helper for int.
++// min is a simple helper for int - i can't believe it doesn't exist already?
+ func min(a, b int) int {
+ 	if b < a {
+ 		return b
+diff --git a/chaincode/contract/shipment_query_ops.go b/chaincode/contract/shipment_query_ops.go
+index e5e6281..dffd14a 100644
+--- a/chaincode/contract/shipment_query_ops.go
++++ b/chaincode/contract/shipment_query_ops.go
+@@ -47,7 +47,6 @@ func (s *FoodtraceSmartContract) getShipmentByID(ctx contractapi.TransactionCont
+ 	return &shipment, nil
+ }
+ 
+-// Fix for GetShipmentPublicDetails in shipment_query_ops.go
+ func (s *FoodtraceSmartContract) GetShipmentPublicDetails(ctx contractapi.TransactionContextInterface, shipmentID string) (*model.Shipment, error) {
+ 	logger.Debugf("GetShipmentPublicDetails: Querying details for shipment '%s'", shipmentID)
+ 	if err := s.validateRequiredString(shipmentID, "shipmentID", maxStringInputLength); err != nil {
+@@ -184,7 +183,6 @@ func (s *FoodtraceSmartContract) GetMyShipments(ctx contractapi.TransactionConte
+ 	}
+ 	defer resultsIterator.Close()
+ 
+-	// FIXED: Initialize as empty slice, not nil
+ 	shipmentsFromQuery := []*model.Shipment{}
+ 	var fetchedCountCouchDB int32 = 0
+ 
+@@ -201,7 +199,7 @@ func (s *FoodtraceSmartContract) GetMyShipments(ctx contractapi.TransactionConte
+ 		}
+ 		ensureShipmentSchemaCompliance(&ship)
+ 		s.enrichShipmentAliases(im, &ship)
+-		ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
++		ship.History = []model.HistoryEntry{}
+ 		shipmentsFromQuery = append(shipmentsFromQuery, &ship)
+ 		fetchedCountCouchDB++
+ 	}
+@@ -232,7 +230,6 @@ func (s *FoodtraceSmartContract) GetAllShipments(ctx contractapi.TransactionCont
+ 	}
+ 	defer resultsIterator.Close()
+ 
+-	// FIXED: Initialize as empty slice, not nil
+ 	shipments := []*model.Shipment{}
+ 	fetchedCount := int32(0)
+ 
+@@ -250,7 +247,7 @@ func (s *FoodtraceSmartContract) GetAllShipments(ctx contractapi.TransactionCont
+ 		if !ship.IsArchived {
+ 			ensureShipmentSchemaCompliance(&ship)
+ 			s.enrichShipmentAliases(im, &ship)
+-			ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
++			ship.History = []model.HistoryEntry{}
+ 			shipments = append(shipments, &ship)
+ 			fetchedCount++
+ 		}
+@@ -295,7 +292,6 @@ func (s *FoodtraceSmartContract) GetShipmentsByStatus(ctx contractapi.Transactio
+ 	}
+ 
+ 	im := NewIdentityManager(ctx)
+-	// NOTE: Authorization removed per previous discussion - now open access
+ 
+ 	pageSize, err := strconv.ParseInt(pageSizeStr, 10, 32)
+ 	if err != nil || pageSize <= 0 {
+@@ -312,7 +308,6 @@ func (s *FoodtraceSmartContract) GetShipmentsByStatus(ctx contractapi.Transactio
+ 	}
+ 	defer resultsIterator.Close()
+ 
+-	// FIXED: Initialize as empty slice, not nil
+ 	shipmentsFromQuery := []*model.Shipment{}
+ 	fetchedCountCouchDB := int32(0)
+ 
+@@ -342,7 +337,6 @@ func (s *FoodtraceSmartContract) GetShipmentsByStatus(ctx contractapi.Transactio
+ 	}, nil
+ }
+ 
+-// Fix for QueryRelatedShipments in shipment_query_ops.go
+ func (s *FoodtraceSmartContract) QueryRelatedShipments(ctx contractapi.TransactionContextInterface, recalledShipmentID string, timeWindowHoursStr string) ([]model.RelatedShipmentInfo, error) {
+ 	im := NewIdentityManager(ctx)
+ 	if err := s.requireAdmin(ctx, im); err != nil {
+@@ -366,7 +360,6 @@ func (s *FoodtraceSmartContract) QueryRelatedShipments(ctx contractapi.Transacti
+ 		return nil, fmt.Errorf("QueryRelatedShipments: recalled shipment '%s' not found: %w", recalledShipmentID, err)
+ 	}
+ 
+-	// FIXED: Initialize as empty slice, not nil
+ 	relatedShipments := []model.RelatedShipmentInfo{}
+ 
+ 	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey(shipmentObjectType, []string{})
+@@ -470,9 +463,7 @@ func (s *FoodtraceSmartContract) QueryRelatedShipments(ctx contractapi.Transacti
+ 	return relatedShipments, nil // Will be [] if empty, not null
+ }
+ 
+-// Fix for processShipmentIterator in shipment_query_ops.go
+ func (s *FoodtraceSmartContract) processShipmentIterator(ctx contractapi.TransactionContextInterface, iterator shim.StateQueryIteratorInterface, enrichAliases bool) ([]*model.Shipment, error) {
+-	// FIXED: Initialize as empty slice, not nil
+ 	shipments := []*model.Shipment{}
+ 	im := NewIdentityManager(ctx)
+ 
+@@ -496,7 +487,6 @@ func (s *FoodtraceSmartContract) processShipmentIterator(ctx contractapi.Transac
+ 	return shipments, nil // Will be [] if empty, not null
+ }
+ 
+-// Fix for GetMyActionableShipments (from earlier artifact)
+ func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.TransactionContextInterface, pageSizeStr string, bookmark string) (*model.PaginatedShipmentResponse, error) {
+ 	actor, err := s.getCurrentActorInfo(ctx)
+ 	if err != nil {
+@@ -505,7 +495,6 @@ func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.Transa
+ 
+ 	im := NewIdentityManager(ctx)
+ 	isCallerAdmin, _ := im.IsCurrentUserAdmin()
+-	// FIXED: Initialize as empty slice, not nil
+ 	userRoles := []string{}
+ 
+ 	if !isCallerAdmin {
+@@ -533,7 +522,6 @@ func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.Transa
+ 	}
+ 	defer resultsIterator.Close()
+ 
+-	// FIXED: Initialize as empty slice, not nil
+ 	actionableShipments := []*model.Shipment{}
+ 	fetchedCount := int32(0)
+ 	totalScanned := 0
+@@ -560,7 +548,7 @@ func (s *FoodtraceSmartContract) GetMyActionableShipments(ctx contractapi.Transa
+ 		if canAct {
+ 			ensureShipmentSchemaCompliance(&ship)
+ 			s.enrichShipmentAliases(im, &ship)
+-			ship.History = []model.HistoryEntry{} // FIXED: Initialize as empty slice
++			ship.History = []model.HistoryEntry{}
+ 
+ 			actionableShipments = append(actionableShipments, &ship)
+ 			fetchedCount++

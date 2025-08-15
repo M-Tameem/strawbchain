@@ -2,7 +2,6 @@
 // Last updated: Aug 15, 2025
 // Last modified by: Muhammad-Tameem Mughal
 
-#!/usr/bin/env node
 /**
  * Comprehensive Integration Test Suite for Foodtrace BFF Server
  * Tests all working API endpoints with current chaincode limitations

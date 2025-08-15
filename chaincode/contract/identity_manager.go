@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"foodtrace/model" // Correct and clean import based on your go.mod
+	"foodtrace/model"
 
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 	"github.com/hyperledger/fabric/common/flogging"
@@ -32,7 +32,7 @@ var ValidRoles = map[string]bool{
 	"processor":   true,
 	"distributor": true,
 	"retailer":    true,
-	"certifier":   true, // <<< NEWLY ADDED ROLE
+	"certifier":   true,
 	// "admin" is a special status, managed by IsAdmin, not a role in this list.
 }
 
