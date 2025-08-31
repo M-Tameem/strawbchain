@@ -59,7 +59,7 @@ const MapPicker: React.FC<MapPickerProps> = ({ latitude, longitude, onChange }) 
         <button
           type="button"
           onClick={handleSearch}
-          className="px-3 py-1 bg-pink-600 text-white rounded"
+          className="px-3 py-1 bg-green-600 text-white rounded"
         >
           Search
         </button>

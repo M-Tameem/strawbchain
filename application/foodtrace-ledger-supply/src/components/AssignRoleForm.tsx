@@ -50,7 +50,7 @@ const AssignRoleForm: React.FC<AssignRoleFormProps> = ({ identities, onSuccess, 
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center space-x-2">
-          <UserPlus className="h-5 w-5 text-pink-600" />
+          <UserPlus className="h-5 w-5 text-green-600" />
           <span>Assign Role</span>
         </CardTitle>
         <CardDescription>Select an identity and role</CardDescription>
@@ -89,7 +89,7 @@ const AssignRoleForm: React.FC<AssignRoleFormProps> = ({ identities, onSuccess, 
             <Button type="button" variant="outline" onClick={onCancel} disabled={loading}>
               <X className="h-4 w-4 mr-2" />Cancel
             </Button>
-            <Button type="submit" className="bg-pink-600 hover:bg-rose-700" disabled={loading}>
+            <Button type="submit" className="bg-green-600 hover:bg-emerald-700" disabled={loading}>
               {loading ? 'Assigning...' : 'Assign Role'}
             </Button>
           </div>

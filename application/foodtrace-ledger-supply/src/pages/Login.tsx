@@ -78,7 +78,7 @@ const Login = () => {
       await login(username, password);
       toast({
         title: "Login successful",
-        description: "Welcome to StrawberryChain!",
+        description: "Welcome to FoodTraceChain!",
       });
     } catch (error) {
       toast({
@@ -92,16 +92,16 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-rose-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100 flex items-center justify-center p-4">
       <div className="w-full max-w-4xl grid md:grid-cols-2 gap-8 items-center">
         {/* Left side - Branding */}
         <div className="text-center md:text-left space-y-6">
           <div className="flex items-center justify-center md:justify-start space-x-3">
-            <div className="h-12 w-12 bg-gradient-to-r from-pink-500 to-rose-600 rounded-xl flex items-center justify-center">
-              <span className="text-white text-2xl" role="img" aria-label="strawberry">🍓</span>
+            <div className="h-12 w-12 bg-gradient-to-r from-green-500 to-emerald-600 rounded-xl flex items-center justify-center">
+              <span className="text-white text-2xl" role="img" aria-label="leaf">🌱</span>
             </div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-pink-600 to-rose-600 bg-clip-text text-transparent">
-              StrawberryChain
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
+              FoodTraceChain
             </h1>
           </div>
           
@@ -109,7 +109,7 @@ const Login = () => {
             <h2 className="text-4xl font-bold text-gray-900">
               Farm to Table
               <br />
-              <span className="text-pink-600">Transparency</span>
+              <span className="text-green-600">Transparency</span>
             </h2>
             <p className="text-lg text-gray-600 max-w-md">
               Track your food's journey through the supply chain with blockchain-powered transparency.
@@ -118,7 +118,7 @@ const Login = () => {
 
           <div className="grid grid-cols-2 md:grid-cols-1 gap-4 max-w-md mx-auto md:mx-0">
             <div className="flex items-center space-x-3 p-3 bg-white/60 rounded-lg">
-              <Leaf className="h-5 w-5 text-pink-600" />
+              <Leaf className="h-5 w-5 text-green-600" />
               <span className="text-sm font-medium text-gray-700">Farm Origins</span>
             </div>
             <div className="flex items-center space-x-3 p-3 bg-white/60 rounded-lg">
@@ -154,7 +154,7 @@ const Login = () => {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   required
-                  className="border-pink-200 focus:border-pink-500"
+                  className="border-green-200 focus:border-green-500"
                   placeholder="Enter your username"
                 />
               </div>
@@ -166,13 +166,13 @@ const Login = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="border-pink-200 focus:border-pink-500"
+                  className="border-green-200 focus:border-green-500"
                   placeholder="Enter your password"
                 />
               </div>
               <Button
                 type="submit"
-                className="w-full bg-gradient-to-r from-pink-500 to-rose-600 hover:from-pink-600 hover:to-rose-700 text-white"
+                className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white"
                 disabled={loading}
               >
                 {loading ? 'Signing in...' : 'Sign In'}
@@ -203,7 +203,7 @@ const Login = () => {
             <div className="mt-6 text-center">
               <p className="text-sm text-gray-600">Demo Credentials Available</p>
               <div className="mt-2 flex items-center justify-center space-x-2">
-                <ShieldCheck className="h-4 w-4 text-pink-600" />
+                <ShieldCheck className="h-4 w-4 text-green-600" />
                 <span className="text-xs text-gray-500">Blockchain Secured</span>
               </div>
             </div>

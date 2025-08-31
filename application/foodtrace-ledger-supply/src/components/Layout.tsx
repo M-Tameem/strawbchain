@@ -64,18 +64,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-rose-50 via-pink-50 to-rose-100">
+    <div className="min-h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-green-100">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b border-rose-200 sticky top-0 z-50">
+      <header className="bg-white/80 backdrop-blur-sm border-b border-green-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center space-x-8">
               <Link to="/dashboard" className="flex items-center space-x-2">
-                <div className="h-8 w-8 bg-gradient-to-r from-pink-500 to-rose-600 rounded-lg flex items-center justify-center">
-                  <span className="text-white text-lg" role="img" aria-label="strawberry">🍓</span>
+              <div className="h-8 w-8 bg-gradient-to-r from-green-500 to-emerald-600 rounded-lg flex items-center justify-center">
+                  <span className="text-white text-lg" role="img" aria-label="leaf">🌱</span>
                 </div>
-                <span className="text-xl font-bold bg-gradient-to-r from-pink-600 to-rose-600 bg-clip-text text-transparent">
-                  StrawberryChain
+                <span className="text-xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
+                  FoodTraceChain
                 </span>
               </Link>
 
@@ -86,8 +86,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                     to={item.path}
                     className={`flex items-center space-x-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
                       location.pathname === item.path
-                        ? 'bg-rose-100 text-rose-700'
-                        : 'text-gray-600 hover:text-pink-600 hover:bg-pink-50'
+                        ? 'bg-green-100 text-green-700'
+                        : 'text-gray-600 hover:text-green-600 hover:bg-green-50'
                     }`}
                   >
                     {item.icon}
@@ -98,13 +98,13 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </div>
 
             <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2 px-3 py-1 bg-white rounded-full border border-rose-200">
+            <div className="flex items-center space-x-2 px-3 py-1 bg-white rounded-full border border-green-200">
                 {getRoleIcon(user?.role || '')}
                 <span className="text-sm font-medium text-gray-700 capitalize">
                   {user?.role}
                 </span>
                 {user?.is_admin && (
-                  <span className="text-xs bg-rose-100 text-rose-700 px-2 py-1 rounded-full">
+                  <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
                     Admin
                   </span>
                 )}
@@ -113,7 +113,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
                 variant="outline"
                 size="sm"
                 onClick={handleLogout}
-                className="border-rose-200 text-rose-700 hover:bg-rose-50"
+                className="border-green-200 text-green-700 hover:bg-green-50"
               >
                 Logout
               </Button>
