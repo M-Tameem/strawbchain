@@ -86,16 +86,16 @@ const CreateShipment = () => {
 
     setFormData({
       shipmentId: "", // auto-generate for demo
-      productName: "Premium Organic Strawberries",
+      productName: "Premium Organic Produce",
       description:
-        "Freshly harvested, organically grown strawberries from raised beds. Cooled quickly for quality.",
+        "Freshly harvested, organically grown produce from mixed fields. Cooled quickly for quality.",
       quantity: "120.0", // as string from input
       unitOfMeasure: "kg",
-      farmerName: "Demo Berry Farms Ltd.",
+      farmerName: "Demo Organic Farms Ltd.",
       farmLocation: "Norfolk County, ON, Canada",
       farmLatitude: "42.8339",
       farmLongitude: "-80.3830",
-      cropType: "Strawberries (Albion)",
+      cropType: "Mixed Vegetables",
       plantingDate: formatDateForInput(planting),
       harvestDate: formatDateForInput(harvest),
       fertilizerUsed: "Organic compost blend, kelp meal",
@@ -107,7 +107,7 @@ const CreateShipment = () => {
       ),
       bufferZoneMeters: "25",
       destinationProcessorId: "DemoProcessor1",
-      certificationDocumentHash: "demoDocHash_organicStrawberries_abc123",
+      certificationDocumentHash: "demoDocHash_organicProduce_abc123",
     });
     toast({
       title: "Demo Data Loaded",
